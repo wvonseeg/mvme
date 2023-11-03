@@ -25,30 +25,32 @@
 #include <QCheckBox>
 #include <QFileSystemModel>
 #include <QTableView>
+#include <QPushButton>
 
 class MVMEContext;
 class MVMEMainWindow;
 
-class ListfileBrowser: public QWidget
+class ListfileBrowser : public QWidget
 {
     Q_OBJECT
-    public:
-        ListfileBrowser(MVMEContext *context, MVMEMainWindow *mainWindow, QWidget *parent = nullptr);
-        ~ListfileBrowser() override;
+public:
+    ListfileBrowser(MVMEContext *context, MVMEMainWindow *mainWindow, QWidget *parent = nullptr);
+    ~ListfileBrowser() override;
 
-    private:
-        void onWorkspacePathChanged();
-        void onGlobalStateChanged();
-        void periodicUpdate();
+private:
+    void onWorkspacePathChanged();
+    void onGlobalStateChanged();
+    void periodicUpdate();
 
-        void onItemDoubleClicked(const QModelIndex &mi);
+    void onItemDoubleClicked(const QModelIndex &mi);
 
-        MVMEContext *m_context;
-        MVMEMainWindow *m_mainWindow;
-        QFileSystemModel *m_fsModel;
-        QTableView *m_fsView;
-        QComboBox *m_analysisLoadActionCombo;
-        QCheckBox *m_cb_replayAllParts;
+    MVMEContext *m_context;
+    MVMEMainWindow *m_mainWindow;
+    QFileSystemModel *m_fsModel;
+    QTableView *m_fsView;
+    QComboBox *m_analysisLoadActionCombo;
+    QCheckBox *m_cb_replayAllParts;
+    QComboBox *m_replaySubdirectoryCombo;
 };
 
 #endif /* __LISTFILE_BROWSER_H__ */

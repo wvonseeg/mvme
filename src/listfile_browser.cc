@@ -33,7 +33,7 @@
 
 static const int PeriodicRefreshInterval_ms = 1000.0;
 
-static const QStringList NameFilters = { QSL("*.mvmelst"), QSL("*.zip") };
+static const QStringList NameFilters = { QSL("*.mvmelst"), QSL("*.zip"), QSL("") };
 
 ListfileBrowser::ListfileBrowser(MVMEContext *context, MVMEMainWindow *mainWindow, QWidget *parent)
     : QWidget(parent)
@@ -43,6 +43,7 @@ ListfileBrowser::ListfileBrowser(MVMEContext *context, MVMEMainWindow *mainWindo
     , m_fsView(new QTableView(this))
     , m_analysisLoadActionCombo(new QComboBox(this))
     , m_cb_replayAllParts(new QCheckBox(this))
+    , m_replaySubdirectoryCombo(new QComboBox(this))
 {
     setWindowTitle(QSL("Listfile Browser"));
 
@@ -68,9 +69,12 @@ ListfileBrowser::ListfileBrowser(MVMEContext *context, MVMEMainWindow *mainWindo
         m_cb_replayAllParts->setText("replay all parts");
         m_cb_replayAllParts->setChecked(true);
 
+        m_replaySubdirectoryCombo->addItem(QSL("Empty"), "");
+
         auto layout = new QFormLayout;
         layout->addRow(QSL("On listfile load"), m_analysisLoadActionCombo);
         layout->addRow(QSL("Split Listfiles"),  m_cb_replayAllParts);
+        layout->addRow(QSL("Replay Subdirectory"), m_replaySubdirectoryCombo);
 
         widgetLayout->addLayout(layout);
     }
