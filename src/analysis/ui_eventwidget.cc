@@ -1311,6 +1311,27 @@ EventWidget::EventWidget(AnalysisServiceProvider *serviceProvider, AnalysisWidge
         }
     });
 
+    // Listfile Filtering Settings
+    QAction *actionListfileFilterSettings = new QAction(
+        QIcon(QSL(":/data_filter.png")), "Listfile Filtering", this);
+    actionListfileFilterSettings->setToolTip("Filter listfiles using conditions (replay mode only).");
+
+    connect(actionListfileFilterSettings, &QAction::triggered, this, [this] {
+        ListfileFilterDialog dialog(m_d->m_serviceProvider, this);
+        dialog.exec();
+    });
+
+    auto update_listfile_filter_action = [actionListfileFilterSettings] (GlobalMode mode)
+    {
+        actionListfileFilterSettings->setEnabled(mode == GlobalMode::Replay);
+    };
+
+    connect(m_d->m_serviceProvider, &AnalysisServiceProvider::modeChanged,
+        actionListfileFilterSettings, update_listfile_filter_action);
+
+    update_listfile_filter_action(m_d->m_serviceProvider->getGlobalMode());
+
+
     m_d->m_eventRateLabel = new QLabel;
 
     // create the lower toolbar
@@ -1327,6 +1348,7 @@ EventWidget::EventWidget(AnalysisServiceProvider *serviceProvider, AnalysisWidge
 
         tb->addAction(m_d->m_actionSelectVisibleLevels);
         tb->addAction(actionEventSettings);
+        tb->addAction(actionListfileFilterSettings);
 
         tb->addSeparator();
 
@@ -4908,28 +4930,7 @@ void EventWidgetPrivate::updateActions()
 
 void EventWidgetPrivate::showDependencyGraphWidget(const AnalysisObjectPtr &obj)
 {
-    bool isNewWidget = !analysis::graph::find_dependency_graph_widget();
-    auto dgw = analysis::graph::show_dependency_graph(m_serviceProvider, obj);
-
-    if (isNewWidget)
-    {
-        QObject::connect(dgw, &analysis::graph::DependencyGraphWidget::editObject,
-                         m_q, [=] (const AnalysisObjectPtr &obj)
-                         {
-                            if (auto op = std::dynamic_pointer_cast<OperatorInterface>(obj))
-                            {
-                                auto cond = std::dynamic_pointer_cast<ConditionInterface>(op);
-                                if (cond && !std::dynamic_pointer_cast<ExpressionCondition>(cond))
-                                    editConditionInFirstAvailableSink(cond);
-                                else
-                                    editOperator(op);
-                            }
-                            else if (auto src = std::dynamic_pointer_cast<SourceInterface>(obj))
-                            {
-                                editSource(src);
-                            }
-                         });
-    }
+    analysis::graph::show_dependency_graph(m_serviceProvider, obj);
 }
 
 void EventWidgetPrivate::editSource(const SourcePtr &src)
@@ -5056,7 +5057,8 @@ bool EventWidgetPrivate::canExport() const
 }
 
 static const char *AnalysisLibraryFileFilter =
-    "MVME Analysis Library Files (*.analysislib);; All Files (*.*)";
+    "MVME Analysis Files (*.analysis *.analysislib);;"
+    "All Files (*.*)";
 
 static const char *AnalysisLibraryFileExtension = ".analysislib";
 
@@ -5131,13 +5133,17 @@ void EventWidgetPrivate::actionImport()
     QJsonDocument doc(gui_read_json_file(fileName));
     auto exportRoot = doc.object();
 
-    if (!exportRoot.contains("MVMEAnalysisExport"))
+    QJsonObject importData;
+
+    if (exportRoot.contains("MVMEAnalysisExport"))
+        importData = exportRoot["MVMEAnalysisExport"].toObject();
+    else if (exportRoot.contains("AnalysisNG"))
+        importData = exportRoot["AnalysisNG"].toObject();
+    else
     {
-        QMessageBox::critical(m_q, "File format error", "File format error");
+        QMessageBox::critical(m_q, "File format error", QSL("Could not read analysis from %1").arg(fileName));
         return;
     }
-
-    auto importData = exportRoot["MVMEAnalysisExport"].toObject();
 
     try
     {

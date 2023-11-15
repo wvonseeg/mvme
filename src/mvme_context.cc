@@ -28,6 +28,7 @@
 #include <QtConcurrent>
 #include <QThread>
 #include <tuple>
+#include <variant>
 
 #include <mesytec-mvlc/mesytec-mvlc.h>
 #include <mesytec-mvlc/mvlc_impl_eth.h>
@@ -50,10 +51,12 @@
 #include "mvme.h"
 #include "mvme_listfile_worker.h"
 #include "mvme_mvlc_listfile.h"
+#include "mvme_prometheus.h"
 #include "mvme_stream_worker.h"
 #include "mvme_workspace.h"
 #include "remote_control.h"
 #include "sis3153.h"
+#include "util/cpp17_util.h"
 #include "util/ticketmutex.h"
 #include "vme_analysis_common.h"
 #include "vme_config_ui.h"
@@ -77,8 +80,6 @@ static const size_t ReadoutBufferSize = Megabytes(1);
 
 static const int TryOpenControllerInterval_ms = 1000;
 static const int PeriodicLoggingInterval_ms = 5000;
-
-static const int DefaultListFileCompression = 1;
 
 static const QString RunNotesFilename = QSL("mvme_run_notes.txt");
 
@@ -167,6 +168,12 @@ struct MVMEContextPrivate
 
     std::unique_ptr<RemoteControl> m_remoteControl;
     std::shared_ptr<EventServer> m_eventServer;
+    std::shared_ptr<ListfileFilterStreamConsumer> m_listfileFilter;
+#ifdef MVME_ENABLE_PROMETHEUS
+    std::shared_ptr<StreamProcCountersPromExporter> m_streamCountersPromExporter;
+#endif
+    using StreamConsumer = std::variant<std::shared_ptr<IStreamModuleConsumer>, std::shared_ptr<IStreamBufferConsumer>>;
+    std::vector<StreamConsumer> streamConsumers_;
 
     ListfileReplayHandle listfileReplayHandle;
     std::unique_ptr<ListfileReplayWorker> listfileReplayWorker;
@@ -517,43 +524,6 @@ void MVMEContextPrivate::clearLog()
     }
 }
 
-static void writeToSettings(const ListFileOutputInfo &info, QSettings &settings)
-{
-    settings.setValue(QSL("WriteListFile"),             info.enabled);
-    settings.setValue(QSL("ListFileFormat"),            toString(info.format));
-    if (!info.directory.isEmpty())
-        settings.setValue(QSL("ListFileDirectory"),     info.directory);
-    settings.setValue(QSL("ListFileCompressionLevel"),  info.compressionLevel);
-    settings.setValue(QSL("ListFilePrefix"),            info.prefix);
-    settings.setValue(QSL("ListFileSuffix"),            info.suffix);
-    settings.setValue(QSL("ListFileFormatString"),      info.fmtStr);
-    settings.setValue(QSL("ListFileRunNumber"),         info.runNumber);
-    settings.setValue(QSL("ListFileOutputFlags"),       info.flags);
-    settings.setValue(QSL("ListFileSplitSize"),         static_cast<quint64>(info.splitSize));
-    settings.setValue(QSL("ListFileSplitTime"),         static_cast<quint64>(info.splitTime.count()));
-}
-
-static ListFileOutputInfo readFromSettings(QSettings &settings)
-{
-    ListFileOutputInfo result;
-    result.enabled          = settings.value(QSL("WriteListFile"), QSL("true")).toBool();
-    result.format           = listFileFormat_fromString(settings.value(QSL("ListFileFormat")).toString());
-    if (result.format == ListFileFormat::Invalid)
-        result.format = ListFileFormat::ZIP;
-    result.directory        = settings.value(QSL("ListFileDirectory"), QSL("listfiles")).toString();
-    result.compressionLevel = settings.value(QSL("ListFileCompressionLevel"), DefaultListFileCompression).toInt();
-    result.prefix           = settings.value(QSL("ListFilePrefix"), QSL("mvmelst")).toString();
-    result.suffix           = settings.value(QSL("ListFileSuffix")).toString();
-    result.fmtStr           = settings.value(QSL("ListFileFormatString"), result.fmtStr).toString();
-    result.runNumber        = settings.value(QSL("ListFileRunNumber"), 1u).toUInt();
-    result.flags            = settings.value(QSL("ListFileOutputFlags"), ListFileOutputInfo::UseRunNumber).toUInt();
-    result.splitSize        = settings.value(QSL("ListFileSplitSize"), static_cast<quint64>(result.splitSize)).toUInt();
-    result.splitTime        = std::chrono::seconds(
-        settings.value(QSL("ListFileSplitTime"), static_cast<quint64>(result.splitTime.count())).toUInt());
-
-    return result;
-}
-
 MVMEContext::MVMEContext(MVMEMainWindow *mainwin, QObject *parent, const MVMEOptions &options)
     : QObject(parent)
     , m_d(new MVMEContextPrivate(this, options))
@@ -570,8 +540,23 @@ MVMEContext::MVMEContext(MVMEMainWindow *mainwin, QObject *parent, const MVMEOpt
 {
     m_d->m_remoteControl = std::make_unique<RemoteControl>(this);
     m_d->analysisServiceProvider = new MVMEContextServiceProvider(this, this);
+
+    // analysis side data stream consumers
     m_d->m_eventServer = std::make_shared<EventServer>();
-    m_d->m_eventServer->setLogger([this](const QString &msg) { this->logMessage(msg); });
+    m_d->streamConsumers_.push_back(m_d->m_eventServer);
+    m_d->m_listfileFilter = std::make_shared<ListfileFilterStreamConsumer>();
+    m_d->streamConsumers_.push_back(m_d->m_listfileFilter);
+#ifdef MVME_ENABLE_PROMETHEUS
+    m_d->m_streamCountersPromExporter = std::make_shared<StreamProcCountersPromExporter>();
+    m_d->streamConsumers_.push_back(m_d->m_streamCountersPromExporter);
+#endif
+
+    {
+        auto logger = [this](const QString &msg) { this->logMessage(msg); };
+
+        for (auto &consumer: m_d->streamConsumers_)
+            std::visit([=] (auto &c) { c->setLogger(logger); }, consumer);
+    }
 
     for (size_t i=0; i<ReadoutBufferCount; ++i)
     {
@@ -741,24 +726,13 @@ void MVMEContext::setVMEConfig(VMEConfig *config)
         m_d->m_vmeConfigAutoSaver->start();
     }
 
-    emit vmeConfigChanged(config);
-}
-
-// Return value is (enabled, listen_hostinfo, listen_port)
-static std::tuple<bool, QHostInfo, int> get_event_server_listen_info(const QSettings &workspaceSettings)
-{
-    if (!workspaceSettings.value(QSL("EventServer/Enabled")).toBool())
-        return std::make_tuple(false, QHostInfo(), 0);
-
-    auto addressString = workspaceSettings.value(QSL("EventServer/ListenAddress")).toString();
-    auto port = workspaceSettings.value(QSL("EventServer/ListenPort")).toInt();
-
-    if (!addressString.isEmpty())
+    if (auto ana = getAnalysis())
     {
-        return std::make_tuple(true, QHostInfo::fromName(addressString), port);
+        ana->beginRun(getRunInfo(), getVMEConfig(),
+            [this] (const QString &msg) { logMessage(msg); });
     }
 
-    return std::make_tuple(true, QHostInfo::fromName("127.0.0.1"), port);
+    emit vmeConfigChanged(config);
 }
 
 bool MVMEContext::setVMEController(VMEController *controller, const QVariantMap &settings)
@@ -860,6 +834,10 @@ bool MVMEContext::setVMEController(VMEController *controller, const QVariantMap 
     connect(m_d->listfileReplayWorker.get(), &ListfileReplayWorker::replayStopped,
             this, &MVMEContext::onReplayDone);
 
+    // Bit hacky: listfileOpened() is connected in mvme.cpp to update the main window and the daqcontrol widget.
+    connect(m_d->listfileReplayWorker.get(), &ListfileReplayWorker::currentFilenameChanged,
+            this, &MVMEContext::listfileOpened);
+
     if (auto mvlcListfileWorker = qobject_cast<MVLCListfileWorker *>(m_d->listfileReplayWorker.get()))
     {
         mvlcListfileWorker->setSnoopQueues(&m_d->mvlcSnoopQueues);
@@ -868,11 +846,19 @@ bool MVMEContext::setVMEController(VMEController *controller, const QVariantMap 
     // TODO: Add the buffer sniffing connection for the MVLCListfileWorker once
     // the support is there.
 
-    // Create a stream worker (analysis side). The concrete type depends on the
+    // Create anew stream worker (analysis side). The concrete type depends on the
     // VME controller type.
     if (m_streamWorker)
     {
-        m_streamWorker->removeModuleConsumer(m_d->m_eventServer);
+        for (auto &consumer: m_d->streamConsumers_)
+        {
+            std::visit(overloaded
+            {
+                [&] (std::shared_ptr<IStreamModuleConsumer> &c) { m_streamWorker->removeModuleConsumer(c); },
+                [&] (std::shared_ptr<IStreamBufferConsumer> &c) { m_streamWorker->removeBufferConsumer(c); },
+            }, consumer);
+        }
+
         auto streamWorker = m_streamWorker.release();
         streamWorker->deleteLater();
         processQtEvents();
@@ -893,45 +879,27 @@ bool MVMEContext::setVMEController(VMEController *controller, const QVariantMap 
 
     assert(m_streamWorker);
 
-
-    // EventServer setup
+    for (auto &consumer: m_d->streamConsumers_)
     {
-        m_streamWorker->attachModuleConsumer(m_d->m_eventServer);
-
-        auto eventServer = m_d->m_eventServer;
-
-        auto settings = makeWorkspaceSettings();
-        bool enabled = false;
-        QHostInfo hostInfo;
-        int port = 0;
-
-        if (settings)
-            std::tie(enabled, hostInfo, port) = get_event_server_listen_info(*settings);
-
-        if (enabled && (hostInfo.error() || hostInfo.addresses().isEmpty()))
+        std::visit(overloaded
         {
-            logMessage(QSL("EventServer error: could not resolve listening address ")
-                       + hostInfo.hostName() + ": " + hostInfo.errorString());
-        }
-        else if (enabled && !hostInfo.addresses().isEmpty())
-        {
-            eventServer->setListeningInfo(hostInfo.addresses().first(), port);
-        }
-
-        bool invoked = QMetaObject::invokeMethod(m_d->m_eventServer.get(),
-                                                 "setEnabled",
-                                                 Qt::QueuedConnection,
-                                                 Q_ARG(bool, enabled));
-        assert(invoked);
-        (void) invoked;
+            [&] (std::shared_ptr<IStreamModuleConsumer> &c) { m_streamWorker->attachModuleConsumer(c); },
+            [&] (std::shared_ptr<IStreamBufferConsumer> &c) { m_streamWorker->attachBufferConsumer(c); },
+        }, consumer);
     }
-
-    // FIXME: test code!
-    //m_streamWorker->attachModuleConsumer(std::make_shared<ListfileFilterStreamConsumer>());
 
     // Move objects to the analysis thread.
     m_streamWorker->moveToThread(m_analysisThread);
     m_d->m_eventServer->moveToThread(m_analysisThread);
+
+
+    for (auto &consumer: m_d->streamConsumers_)
+    {
+        std::visit(overloaded
+        {
+            [&] (auto &c) { c->reloadConfiguration(); }
+        }, consumer);
+    }
 
     // Run the StreamWorkerBase::startupConsumers in the worker thread. This is
     // used to e.g. get the EventServer to accept client connections while the
@@ -941,7 +909,7 @@ bool MVMEContext::setVMEController(VMEController *controller, const QVariantMap 
     // TODO: add a way to wait for completion of the startup.
     {
         [[maybe_unused]] bool invoked = QMetaObject::invokeMethod(
-            m_streamWorker.get(), "startupConsumers", Qt::QueuedConnection);
+            m_streamWorker.get(), &StreamWorkerBase::startupConsumers, Qt::QueuedConnection);
         assert(invoked);
     }
 
@@ -1292,7 +1260,7 @@ void MVMEContext::onDAQDone()
     {
         qDebug() << __PRETTY_FUNCTION__ << "writing listfile output info to mvmeworkspace.ini";
         auto rdoWorkerContext = m_readoutWorker->getContext();
-        writeToSettings(rdoWorkerContext.listfileOutputInfo, *makeWorkspaceSettings());
+        write_listfile_output_info_to_qsettings(rdoWorkerContext.listfileOutputInfo, *makeWorkspaceSettings());
     }
 }
 
@@ -1456,7 +1424,7 @@ bool MVMEContext::setReplayFileHandle(ListfileReplayHandle handle, OpenListfileO
         getVMEConfig(), getAnalysis(),
         getAnalysisUi());
 
-    emit listfileOpened(handle.inputFilename);
+    emit listfileOpened(m_d->listfileReplayHandle.inputFilename);
 
     return true;
 }
@@ -1833,6 +1801,7 @@ void MVMEContext::startDAQReplay(quint32 nEvents, bool keepHistoContents)
     m_d->m_runInfo.keepAnalysisState = keepHistoContents;
     m_d->m_runInfo.isReplay = true;
     m_d->m_runInfo.infoDict["replaySourceFile"] = fi.fileName();
+    m_d->m_runInfo.infoDict["listfileLogBuffer"] = m_d->listfileReplayHandle.messages;
 
     m_d->listfileReplayWorker->setEventsToRead(nEvents);
 
@@ -2719,30 +2688,13 @@ void MVMEContext::reapplyWorkspaceSettings()
         m_d->m_remoteControl->start();
     }
 
-    // EventServer
+    // analysis side data consumers
+    for (auto &consumer: m_d->streamConsumers_)
     {
-        bool enabled;
-        QHostInfo hostInfo;
-        int port;
-
-        std::tie(enabled, hostInfo, port) = get_event_server_listen_info(*settings);
-
-        if (enabled && (hostInfo.error() || hostInfo.addresses().isEmpty()))
+        std::visit(overloaded
         {
-            logMessage(QSL("EventServer error: could not resolve listening address ")
-                       + hostInfo.hostName() + ": " + hostInfo.errorString());
-        }
-        else if (enabled && !hostInfo.addresses().isEmpty())
-        {
-            m_d->m_eventServer->setListeningInfo(hostInfo.addresses().first(), port);
-        }
-
-        bool invoked = QMetaObject::invokeMethod(m_d->m_eventServer.get(),
-                                                 "setEnabled",
-                                                 Qt::QueuedConnection,
-                                                 Q_ARG(bool, enabled));
-        assert(invoked);
-        (void) invoked;
+            [&] (auto &c) { c->reloadConfiguration(); }
+        }, consumer);
     }
 }
 
@@ -2935,14 +2887,14 @@ void MVMEContext::analysisWasSaved()
 void MVMEContext::setListFileOutputInfo(const ListFileOutputInfo &info)
 {
     auto settings = makeWorkspaceSettings();
-    writeToSettings(info, *settings);
+    write_listfile_output_info_to_qsettings(info, *settings);
     emit ListFileOutputInfoChanged(info);
 }
 
 ListFileOutputInfo MVMEContext::getListFileOutputInfo() const
 {
-    auto info = readFromSettings(*makeWorkspaceSettings());
-    info.fullDirectory = getListFileOutputDirectoryFullPath(info.directory);
+    auto info = read_listfile_output_info_from_qsettings(*makeWorkspaceSettings());
+    //info.fullDirectory = getListFileOutputDirectoryFullPath(info.directory);
     return info;
 }
 
@@ -3025,6 +2977,7 @@ RunInfo MVMEContext::getRunInfo() const
 void MVMEContext::setRunNotes(const QString &notes)
 {
     m_d->runNotes.access().ref() = notes;
+    m_d->m_listfileFilter->setRunNotes(notes);
 }
 
 QString MVMEContext::getRunNotes() const

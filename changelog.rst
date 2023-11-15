@@ -4,6 +4,25 @@
 Changelog
 ##################################################
 
+Version 1.10.0
+--------------
+
+* new: filter listfiles based on analysis conditions. Produces MVLC_USB
+  formatted output listfiles.
+
+* new: prometheus metrics for the MVLC readout and the analysis. Metrics
+  are exposed on port 13802 by default.
+
+* vme_templates: Updated VMMR template. Merge vmmr and vmmr_1ns variants.
+
+* MVLC Trigger IO: fixes for the LUT simulation code (FW0036 related).
+
+* analysis: conditions now output 0.0 if false instead of invalid_param()/NaN.
+  Allows to track condition true/false and total counts in a single 1d
+  histogram.
+
+* bugfixes: empty listfile filename display, uninitialized data in multi_event_splitter
+
 Version 1.9.2
 -------------
 
@@ -44,6 +63,15 @@ Version 1.9.0
 
 * vme_script: Implement new commands for 2eSST fifo and memory block reads:
   ``2esstfifo``, ``2esstsfifo``, ``2esstmem``, ``2esstsmem``.
+
+* vme_script: Better error handling and log output for MVLC inline stacks.
+
+* MVLC Trigger IO: unit initialization is now wrapped in ``mvlc_stack_begin/end``
+  blocks to get atomic init behavior. This means executing the Trigger IO script
+  won't interfere with the DSO or active readouts that are using the Trigger IO
+  system. This change also speeds up execution of the Trigger IO init script.
+  Note: the Trigger IO script has to be regenerated via the GUI for this change
+  to take effect!
 
 * vme_script: Better error handling and log output for MVLC inline stacks
   (``mvlc_stack_begin/end``).

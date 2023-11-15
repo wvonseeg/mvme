@@ -931,6 +931,7 @@ struct DSO_Sim_Result
     std::vector<u32> dsoBuffer; // Raw DSO data
     Sim sim;
     bool wasTriggered = false;
+    std::chrono::microseconds acquireDuration;
 };
 
 // This is a bit ugly: sim.sampledTraces can diverge from what was last
@@ -954,11 +955,16 @@ DSO_Sim_Result run_dso_and_sim(
         // that copy for its internal state once this function returns.
         result.sim.trigIO = trigIO;
 
+        auto acqStart = std::chrono::steady_clock::now();
+
         if (auto ec = acquire_dso_sample(mvlc, dsoSetup, result.dsoBuffer, cancel))
         {
             result.ec = ec;
             return result;
         }
+
+        result.acquireDuration = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::steady_clock::now() - acqStart);
 
         auto sampledTraces = fill_snapshot_from_dso_buffer(result.dsoBuffer);
 

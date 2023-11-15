@@ -406,41 +406,6 @@ mvlc_daq_shutdown(
 //
 // build_event_readout_script
 //
-#if 0
-vme_script::VMEScript build_event_readout_script(
-    const EventConfig *eventConfig,
-    u8 flags)
-{
-    using namespace vme_script;
-
-    VMEScript result;
-
-    result += parse(eventConfig->vmeScripts["readout_start"]);
-
-    for (auto module: eventConfig->getModuleConfigs())
-    {
-        if (module->isEnabled())
-        {
-            result += parse(module->getReadoutScript(), module->getBaseAddress());
-        }
-
-        /* If the module is disabled only the EndMarker will be present in the
-         * readout data. This looks the same as if the module readout did not
-         * yield any data at all. */
-        if (!(flags & EventReadoutBuildFlags::NoModuleEndMarker))
-        {
-            Command marker;
-            marker.type = CommandType::Marker;
-            marker.value = EndMarker;
-            result += marker;
-        }
-    }
-
-    result += parse(eventConfig->vmeScripts["readout_end"]);
-
-    return result;
-}
-#else
 vme_script::VMEScript build_event_readout_script(
     const EventConfig *eventConfig,
     u8 flags)
@@ -472,7 +437,6 @@ vme_script::VMEScript build_event_readout_script(
 
     return result;
 }
-#endif
 
 struct DAQReadoutListfileHelperPrivate
 {
@@ -510,10 +474,10 @@ QString make_new_listfile_name(ListFileOutputInfo *outInfo)
             auto filename = generate_output_filename(*outInfo);
             auto basename = QFileInfo(filename).completeBaseName();
             auto suffix = QFileInfo(filename).completeSuffix();
-            nameToTest = outInfo->fullDirectory + '/' + basename + "_part001." + suffix;
+            nameToTest = outInfo->directory + '/' + basename + "_part001." + suffix;
         }
         else
-            nameToTest = outInfo->fullDirectory + '/' + generate_output_filename(*outInfo);
+            nameToTest = outInfo->directory + '/' + generate_output_filename(*outInfo);
 
         fi.setFile(nameToTest);
 
@@ -529,7 +493,7 @@ QString make_new_listfile_name(ListFileOutputInfo *outInfo)
         }
     } while (fi.exists());
 
-    auto result = outInfo->fullDirectory + '/' + generate_output_filename(*outInfo);
+    auto result = outInfo->directory + '/' + generate_output_filename(*outInfo);
     return result;
 }
 
@@ -539,7 +503,7 @@ void DAQReadoutListfileHelper::beginRun()
         return;
 
     // empty output path
-    if (m_readoutContext.listfileOutputInfo.fullDirectory.isEmpty())
+    if (m_readoutContext.listfileOutputInfo.directory.isEmpty())
         return;
 
     switch (m_readoutContext.listfileOutputInfo.format)

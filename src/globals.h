@@ -182,7 +182,6 @@ struct ListFileOutputInfo
     static const u32 SplitByTime  = 1u << 3;
     static const u32 UseFormatStr = 1u << 4;
 
-    // TODO: maybe move enabled into flags
     bool enabled = true;        // true if a listfile should be written
 
     ListFileFormat format;      // the format to write
@@ -190,8 +189,8 @@ struct ListFileOutputInfo
     QString directory;          // Path to the output directory. If it's not a
                                 // full path it's relative to the workspace directory.
                                 //
-    QString fullDirectory;      // Always the full path to the listfile output directory.
-                                // This is transient and not stored in the workspace settings.
+    //QString fullDirectory;      // Always the full path to the listfile output directory.
+    //                            // This is transient and not stored in the workspace settings.
 
     int compressionLevel = 1;   // zlib/lz4 compression level
 
@@ -213,6 +212,12 @@ QString generate_output_basename(const ListFileOutputInfo &info);
 
 // same as above but with .zip or .mvmelst extension
 QString generate_output_filename(const ListFileOutputInfo &info);
+
+void write_listfile_output_info_to_qsettings(const ListFileOutputInfo &info, QSettings &settings);
+ListFileOutputInfo read_listfile_output_info_from_qsettings(QSettings &settings);
+
+QVariant listfile_output_info_to_variant(const ListFileOutputInfo &info);
+ListFileOutputInfo listfile_output_info_from_variant(const QVariant &var);
 
 enum class ControllerState
 {

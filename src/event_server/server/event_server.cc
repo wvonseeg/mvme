@@ -21,9 +21,11 @@
 #include "event_server/server/event_server.h"
 
 #include <QCoreApplication>
+#include <QHostInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QJsonArray>
+#include <QSettings>
 #include <QTcpServer>
 #include <QTcpSocket>
 
@@ -322,9 +324,64 @@ void EventServer::shutdown()
     m_d->m_clients.clear();
 }
 
+QSettings get_workspace_settings()
+{
+    return QSettings("mvmeworkspace.ini", QSettings::IniFormat);
+}
+
+// Return value is (enabled, listen_hostinfo, listen_port)
+static std::tuple<bool, QHostInfo, int> get_event_server_listen_info(const QSettings &workspaceSettings)
+{
+    if (!workspaceSettings.value(QSL("EventServer/Enabled")).toBool())
+        return std::make_tuple(false, QHostInfo(), 0);
+
+    auto addressString = workspaceSettings.value(QSL("EventServer/ListenAddress")).toString();
+    auto port = workspaceSettings.value(QSL("EventServer/ListenPort")).toInt();
+
+    if (!addressString.isEmpty())
+    {
+        return std::make_tuple(true, QHostInfo::fromName(addressString), port);
+    }
+
+    return std::make_tuple(true, QHostInfo::fromName("127.0.0.1"), port);
+}
+
+void EventServer::reloadConfiguration()
+{
+    auto settings = get_workspace_settings();
+    bool enabled = false;
+    QHostInfo hostInfo;
+    int port = 0;
+
+    std::tie(enabled, hostInfo, port) = get_event_server_listen_info(settings);
+
+    if (enabled && (hostInfo.error() || hostInfo.addresses().isEmpty()))
+    {
+        logMessage(QSL("EventServer error: could not resolve listening address ")
+                    + hostInfo.hostName() + ": " + hostInfo.errorString());
+    }
+    else if (enabled && !hostInfo.addresses().isEmpty())
+    {
+        this->setListeningInfo(hostInfo.addresses().first(), port);
+    }
+
+    // This wants to run in the event servers thread.
+    bool invoked = QMetaObject::invokeMethod(this,
+                                                "setEnabled",
+                                                Qt::QueuedConnection,
+                                                Q_ARG(bool, enabled));
+    assert(invoked);
+    (void) invoked;
+}
+
 void EventServer::setLogger(Logger logger)
 {
     m_d->m_logger = logger;
+}
+
+StreamConsumerBase::Logger &EventServer::getLogger()
+{
+    return m_d->m_logger;
 }
 
 void EventServer::setListeningInfo(const QHostAddress &address, quint16 port)
@@ -361,7 +418,7 @@ void EventServer::setEnabled(bool b)
 // analysis datasources. Send this description out to clients.
 void EventServer::beginRun(const RunInfo &runInfo,
               const VMEConfig *vmeConfig,
-              const analysis::Analysis *analysis)
+              analysis::Analysis *analysis)
 {
     if (!m_d->m_enabled) return;
 
@@ -636,6 +693,7 @@ void EventServer::processModuleData(s32 eventIndex, s32 moduleIndex,
     Q_UNUSED(size);
 
     if (!m_d->m_enabled) return;
+
     // Noop for this server case. We're interested in the endEvent() call as at
     // that point all data from all modules has been processed by the a2
     // analysis system and is available at the output pipes of the data
@@ -651,6 +709,7 @@ void EventServer::processModuleData(s32 crateIndex, s32 eventIndex, const Module
     Q_UNUSED(moduleCount);
 
     if (!m_d->m_enabled) return;
+
     // Noop for this server case. We're interested in the endEvent() call as at
     // that point all data from all modules has been processed by the a2
     // analysis system and is available at the output pipes of the data

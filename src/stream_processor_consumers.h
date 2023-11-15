@@ -12,13 +12,30 @@ namespace analysis { class Analysis; }
 struct DAQStats;
 struct RunInfo;
 
+class QObject;
+
 class LIBMVME_EXPORT StreamConsumerBase
 {
     public:
         using Logger = std::function<void (const QString &)>;
         virtual ~StreamConsumerBase() {}
         virtual void setLogger(Logger logger) = 0;
-};
+        virtual Logger &getLogger() = 0;
+        void setWorker(QObject *worker) { worker_ = worker; }
+        QObject *getWorker() const { return worker_; }
+
+        virtual void reloadConfiguration() {};
+
+    protected:
+        void logMessage(const QString &msg)
+        {
+            if (auto &logger = getLogger())
+                logger(msg);
+        }
+
+    private:
+        QObject *worker_;
+ };
 
 /* Interface for consumers of raw module data. */
 class LIBMVME_EXPORT IStreamModuleConsumer: public StreamConsumerBase
@@ -31,12 +48,11 @@ class LIBMVME_EXPORT IStreamModuleConsumer: public StreamConsumerBase
 
         virtual void beginRun(const RunInfo &runInfo,
                               const VMEConfig *vmeConfig,
-                              const analysis::Analysis *analysis) = 0;
+                              analysis::Analysis *analysis) = 0;
 
         virtual void endRun(const DAQStats &stats, const std::exception *e = nullptr) = 0;
 
         virtual void beginEvent(s32 eventIndex) = 0;
-        virtual void endEvent(s32 eventIndex) = 0;
 
         // Old interface still used by MVMEStreamProcessor.
         virtual void processModuleData(s32 eventIndex, s32 moduleIndex,
@@ -47,11 +63,15 @@ class LIBMVME_EXPORT IStreamModuleConsumer: public StreamConsumerBase
         virtual void processModuleData(s32 crateIndex, s32 eventIndex,
             const ModuleData *moduleDataList, unsigned moduleCount) = 0;
 
+        virtual void endEvent(s32 eventIndex) = 0;
+
         // Note: Having both system event and timetick methods is not redunant:
         // during live DAQ runs the latter method is called while during replays
         // timeticks are extracted from incoming system event buffers.
         virtual void processSystemEvent(s32 crateIndex, const u32 *header, u32 size) = 0;
         virtual void processTimetick() = 0;
+
+        //virtual void setEnabled(bool enabled) = 0;
 };
 
 /* Interface for consumers of raw readout data. The bufferType argument to
