@@ -57,6 +57,7 @@
 #include "remote_control.h"
 #include "sis3153.h"
 #include "util/cpp17_util.h"
+#include "util/qt_fs.h"
 #include "util/ticketmutex.h"
 #include "vme_analysis_common.h"
 #include "vme_config_ui.h"
@@ -69,6 +70,7 @@
 
 #include "git_sha1.h"
 
+using namespace mesytec;
 using namespace mesytec::mvme;
 
 namespace
@@ -89,7 +91,7 @@ static const int DefaultConfigFileAutosaveInterval_ms = 1 * 60 * 1000;
 
 /* Maximum number of connection attempts to the current VMEController before
  * giving up. */
-static const int VMECtrlConnectMaxRetryCount = 3;
+static const int VMECtrlConnectMaxRetryCount = 1;
 
 /* Maximum number of entries to keep in the logbuffer. Once this is exceeded
  * the oldest entries will be removed. */
@@ -465,6 +467,7 @@ void MVMEContextPrivate::resumeAnalysis(analysis::Analysis::BeginRunOption runOp
     {
         // TODO: merge with the build  code in prepareStart().
         auto analysis = m_q->getAnalysis();
+        m_q->m_streamWorker->setAnalysis(analysis);
         analysis->beginRun(
             runOption, m_q->getVMEConfig(),
             [this] (const QString &msg) { m_q->logMessage(msg); });
@@ -726,12 +729,6 @@ void MVMEContext::setVMEConfig(VMEConfig *config)
         m_d->m_vmeConfigAutoSaver->start();
     }
 
-    if (auto ana = getAnalysis())
-    {
-        ana->beginRun(getRunInfo(), getVMEConfig(),
-            [this] (const QString &msg) { logMessage(msg); });
-    }
-
     emit vmeConfigChanged(config);
 }
 
@@ -982,8 +979,6 @@ void MVMEContext::onControllerOpenFinished()
 {
     auto result = m_ctrlOpenWatcher.result();
 
-    //qDebug() << __PRETTY_FUNCTION__ << "result =" << result.toString();
-
     if (!result.isError())
     {
         if (auto vmusb = dynamic_cast<VMUSB *>(m_controller))
@@ -1025,13 +1020,22 @@ void MVMEContext::onControllerOpenFinished()
                           );
             }
         }
-        else if (auto mvlc = dynamic_cast<mesytec::mvme_mvlc::MVLC_VMEController *>(m_controller))
+        else if (auto mvlcCtrl = dynamic_cast<mesytec::mvme_mvlc::MVLC_VMEController *>(m_controller))
         {
             using namespace mesytec::mvme_mvlc;
 
+            auto mvlcObj  = mvlcCtrl->getMVLCObject();
+            auto mvlcCore = mvlcObj->getMVLC();
+
             logMessage(QString("Opened VME Controller %1 (%2)")
-                       .arg(mvlc->getIdentifyingString())
-                       .arg(mvlc->getMVLCObject()->getConnectionInfo()));
+                       .arg(mvlcCtrl->getIdentifyingString())
+                       .arg(mvlcObj->getConnectionInfo()));
+
+            if (mvlcCore.firmwareRevision() < 0x0037)
+            {
+                logMessage(QSL("Warning: MVLC firmware >= FW0037 is recommended. Update instructions can be found"
+                               " here: https://mesytec.com/downloads/firmware%20updates/firmware_VME.html"));
+            }
         }
         else // generic case
         {
@@ -1043,6 +1047,8 @@ void MVMEContext::onControllerOpenFinished()
     }
     else if (result.error() != VMEError::DeviceIsOpen)
     {
+        qDebug() << __PRETTY_FUNCTION__ << "result =" << result.toString();
+
         assert(result.isError());
 
         /* Could not connect. Inc retry count and log a hopefully user
@@ -1543,13 +1549,14 @@ void MVMEContext::setVMEConfigFilename(QString name, bool updateWorkspace)
 {
     if (m_configFileName != name || updateWorkspace)
     {
-        m_configFileName = name;
+        // Remove the workspace path (current dir) prefix from the filename.
+        m_configFileName = filepath_relative_to_cwd(name);
+
         if (updateWorkspace)
         {
-            makeWorkspaceSettings()->setValue(
-                QSL("LastVMEConfig"), name.remove(getWorkspaceDirectory() + '/'));
+            makeWorkspaceSettings()->setValue(QSL("LastVMEConfig"), m_configFileName);
         }
-        emit vmeConfigFilenameChanged(name);
+        emit vmeConfigFilenameChanged(m_configFileName);
     }
 }
 
@@ -1557,13 +1564,14 @@ void MVMEContext::setAnalysisConfigFilename(QString name, bool updateWorkspace)
 {
     if (m_analysisConfigFileName != name || updateWorkspace)
     {
-        m_analysisConfigFileName = name;
+        // Remove the workspace path (current dir) prefix from the filename.
+        m_analysisConfigFileName = filepath_relative_to_cwd(name);
+
         if (updateWorkspace)
         {
-            makeWorkspaceSettings()->setValue(
-                QSL("LastAnalysisConfig"), name.remove(getWorkspaceDirectory() + '/'));
+            makeWorkspaceSettings()->setValue(QSL("LastAnalysisConfig"), m_analysisConfigFileName);
         }
-        emit analysisConfigFileNameChanged(name);
+        emit analysisConfigFileNameChanged(m_analysisConfigFileName);
     }
 }
 
@@ -2894,7 +2902,6 @@ void MVMEContext::setListFileOutputInfo(const ListFileOutputInfo &info)
 ListFileOutputInfo MVMEContext::getListFileOutputInfo() const
 {
     auto info = read_listfile_output_info_from_qsettings(*makeWorkspaceSettings());
-    //info.fullDirectory = getListFileOutputDirectoryFullPath(info.directory);
     return info;
 }
 

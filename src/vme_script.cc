@@ -1622,28 +1622,28 @@ void evaluate_expressions(PreparsedLine &preparsed)
 // Overloads without SymbolTables arguments. These will create a single symbol
 // table for internal use. Symbols set from within the script are not
 // accessible from the outside.
-VMEScript parse(QFile *input, uint32_t baseAddress)
+VMEScript parse(QFile *input, uint32_t baseAddress, const QString &sourceId)
 {
     SymbolTables symtabs;
-    return parse(input, symtabs, baseAddress);
+    return parse(input, symtabs, baseAddress, sourceId);
 }
 
-VMEScript parse(const QString &input, uint32_t baseAddress)
+VMEScript parse(const QString &input, uint32_t baseAddress, const QString &sourceId)
 {
     SymbolTables symtabs;
-    return parse(input, symtabs, baseAddress);
+    return parse(input, symtabs, baseAddress, sourceId);
 }
 
-VMEScript parse(const std::string &input, uint32_t baseAddress)
+VMEScript parse(const std::string &input, uint32_t baseAddress, const QString &sourceId)
 {
     SymbolTables symtabs;
-    return parse(input, symtabs, baseAddress);
+    return parse(input, symtabs, baseAddress, sourceId);
 }
 
-VMEScript parse(QTextStream &input, uint32_t baseAddress)
+VMEScript parse(QTextStream &input, uint32_t baseAddress, const QString &sourceId)
 {
     SymbolTables symtabs;
-    return parse(input, symtabs, baseAddress);
+    return parse(input, symtabs, baseAddress, sourceId);
 }
 
 // Overloads taking a SymbolTables instances.
@@ -1651,28 +1651,29 @@ VMEScript parse(QTextStream &input, uint32_t baseAddress)
 // symtabs[0]. If symtabs is empty a single fresh SymbolTable will be created
 // and added to symtabs.
 
-VMEScript parse(QFile *input, SymbolTables &symtabs, uint32_t baseAddress)
+VMEScript parse(QFile *input, SymbolTables &symtabs, uint32_t baseAddress, const QString &sourceId)
 {
     QTextStream stream(input);
-    return parse(stream, symtabs, baseAddress);
+    return parse(stream, symtabs, baseAddress, sourceId);
 }
 
-VMEScript parse(const QString &input, SymbolTables &symtabs, uint32_t baseAddress)
+VMEScript parse(const QString &input, SymbolTables &symtabs, uint32_t baseAddress, const QString &sourceId)
 {
     QTextStream stream(const_cast<QString *>(&input), QIODevice::ReadOnly);
-    return parse(stream, symtabs, baseAddress);
+    return parse(stream, symtabs, baseAddress, sourceId);
 }
 
-VMEScript parse(const std::string &input, SymbolTables &symtabs, uint32_t baseAddress)
+VMEScript parse(const std::string &input, SymbolTables &symtabs, uint32_t baseAddress, const QString &sourceId)
 {
     auto qStr = QString::fromStdString(input);
-    return parse(qStr, symtabs, baseAddress);
+    return parse(qStr, symtabs, baseAddress, sourceId);
 }
 
 VMEScript parse(
     QTextStream &input,
     SymbolTables &symtabs,
-    uint32_t baseAddress)
+    uint32_t baseAddress,
+    const QString &sourceId)
 {
     int lineIndex = 0;
 
@@ -1860,6 +1861,9 @@ VMEScript parse(
             }
         }
 
+        for (auto &cmd: result)
+            cmd.source = sourceId;
+
         return result;
     }
     catch (const QString &err)
@@ -1970,7 +1974,7 @@ QString amod_to_string(u8 addressMode)
     return result;
 }
 
-QString to_string(DataWidth dataWidth)
+QString to_qstring(DataWidth dataWidth)
 {
     static const QMap<DataWidth, QString> dataWidthToString =
     {
@@ -2025,7 +2029,7 @@ QString to_string(const Command &cmd)
                 buffer = QString(QSL("%1 %2 %3 %4"))
                     .arg(cmdStr)
                     .arg(amod_to_string(cmd.addressMode))
-                    .arg(to_string(cmd.dataWidth))
+                    .arg(to_qstring(cmd.dataWidth))
                     .arg(format_hex(cmd.address));
                 if (cmd.mvlcSlowRead)
                     buffer += " late";
@@ -2039,7 +2043,7 @@ QString to_string(const Command &cmd)
                 buffer = QString(QSL("%1 %2 %3 %4 %5"))
                     .arg(cmdStr)
                     .arg(amod_to_string(cmd.addressMode))
-                    .arg(to_string(cmd.dataWidth))
+                    .arg(to_qstring(cmd.dataWidth))
                     .arg(format_hex(cmd.address))
                     .arg(format_hex(cmd.value));
             } break;

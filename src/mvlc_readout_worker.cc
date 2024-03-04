@@ -296,6 +296,9 @@ struct MVLCReadoutWorker::Private
 
     void updateDAQStats()
     {
+        assert(mvlcReadoutWorker);
+        if (!mvlcReadoutWorker) return;
+
         auto rdoCounters = mvlcReadoutWorker->counters();
 
         auto &daqStats = q->getContext().daqStats;
@@ -327,7 +330,7 @@ bool MVLCReadoutWorker::Private::daqStartSequence()
     // member variable.
     std::vector<u32> triggers;
     std::error_code ec;
-    std::tie(triggers, ec) = get_trigger_values(vmeConfig, logger);
+    std::tie(triggers, ec) = get_trigger_values(vmeConfig);
 
     if (ec)
     {
@@ -478,7 +481,7 @@ void MVLCReadoutWorker::start(quint32 cycles)
                 // Write our VMEConfig to the listfile aswell (the CrateConfig from
                 // the library does not have all the meta information stored in the
                 // VMEConfig).
-                mvme_mvlc_listfile::listfile_write_mvme_config(bwh, *vmeConfig);
+                mvme_mvlc_listfile::listfile_write_mvme_config(bwh, crateConfig.crateId, *vmeConfig);
 
                 preamble = bwh.getBuffer();
             }
@@ -534,7 +537,17 @@ void MVLCReadoutWorker::start(quint32 cycles)
 #ifdef MVLC_HAVE_ZMQ
             else if (outInfo.format == ListFileFormat::ZMQ_Ganil)
             {
-                d->listfileWriteHandle = std::make_shared<mvlc::listfile::ZmqGanilWriteHandle>();
+                if (outInfo.options.contains("zmq_ganil_bind_port"))
+                {
+                    auto zmqBindPort = outInfo.options.value("zmq_ganil_bind_port").toString().toStdString();
+                    auto zmqBindUrl = "tcp://*:" + zmqBindPort;
+                    d->listfileWriteHandle = std::make_shared<mvlc::listfile::ZmqGanilWriteHandle>(zmqBindUrl);
+                }
+                else
+                {
+                    d->listfileWriteHandle = std::make_shared<mvlc::listfile::ZmqGanilWriteHandle>();
+                }
+
                 // Note: intentionally not sending the listfile preamble as the GANIL receiver
                 // code does not expect it.
             }
@@ -593,7 +606,7 @@ void MVLCReadoutWorker::start(quint32 cycles)
         // End of readout; begin shutdown procedure.
 
         if (d->listfileWriteHandle)
-            listfile_write_system_event(*d->listfileWriteHandle, system_event::subtype::EndOfFile);
+            listfile_write_system_event(*d->listfileWriteHandle, crateConfig.crateId, system_event::subtype::EndOfFile);
 
         logMessage("Leaving readout loop");
         logMessage("");
@@ -681,6 +694,9 @@ void MVLCReadoutWorker::start(quint32 cycles)
 
 void MVLCReadoutWorker::stop()
 {
+    assert(d->mvlcReadoutWorker);
+    if (!d->mvlcReadoutWorker) return;
+
     if (auto ec = d->mvlcReadoutWorker->stop())
         logError(ec.message().c_str());
     else
@@ -698,12 +714,15 @@ void MVLCReadoutWorker::stop()
         logMessage(QString(QSL("MVLC readout stopped")));
     }
 
-    // delete the listfileWriteHandle
+    // Release the write handle to free up resources, e.g. zmq socket.
     d->listfileWriteHandle = {};
 }
 
 void MVLCReadoutWorker::pause()
 {
+    assert(d->mvlcReadoutWorker);
+    if (!d->mvlcReadoutWorker) return;
+
     if (auto ec = d->mvlcReadoutWorker->pause())
         logError(ec.message().c_str());
     else
@@ -725,6 +744,9 @@ void MVLCReadoutWorker::pause()
 void MVLCReadoutWorker::resume(quint32 cycles)
 {
     assert(cycles == 0 || !"mvlc_readout_worker does not support running a limited number of cycles"); (void) cycles;
+    assert(d->mvlcReadoutWorker);
+
+    if (!d->mvlcReadoutWorker) return;
 
     if (auto ec = d->mvlcReadoutWorker->resume())
         logError(ec.message().c_str());
@@ -784,130 +806,6 @@ void MVLCReadoutWorker::requestDebugInfoOnNextError()
 void MVLCReadoutWorker::logError(const QString &msg)
 {
     getContext().errorLogger(QSL("MVLC Readout Error: %1").arg(msg));
-}
-
-bool run_daq_start_sequence(
-    MVLC_VMEController *mvlcCtrl,
-    VMEConfig &vmeConfig,
-    bool ignoreStartupErrors,
-    std::function<void (const QString &)> logger,
-    std::function<void (const QString &)> error_logger)
-{
-    auto run_init_func = [=, &vmeConfig] (auto initFunc, const QString &partTitle)
-    {
-        vme_script::run_script_options::Flag opts = 0u;
-        if (!ignoreStartupErrors)
-            opts = vme_script::run_script_options::AbortOnError;
-
-        auto initResults = initFunc(&vmeConfig, mvlcCtrl, logger, error_logger, opts);
-
-        if (!ignoreStartupErrors && has_errors(initResults))
-        {
-            logger("");
-            logger(partTitle + " Errors:");
-            auto logger_ = [=] (const QString &msg) { logger("  " + msg); };
-            log_errors(initResults, logger_);
-            return false;
-        }
-
-        return true;
-    };
-
-
-    auto &mvlc = *mvlcCtrl->getMVLCObject();
-
-    logger("");
-    logger("Initializing MVLC");
-
-    // Clear triggers and stacks =========================================================
-
-    logger("  Disabling triggers");
-
-    if (auto ec = disable_all_triggers_and_daq_mode(mvlc))
-    {
-        logger(QString("Error disabling readout triggers: %1")
-               .arg(ec.message().c_str()));
-        return false;
-    }
-
-    logger("  Resetting stack offsets");
-
-    if (auto ec = reset_stack_offsets(mvlc))
-    {
-        logger(QString("Error resetting stack offsets: %1")
-               .arg(ec.message().c_str()));
-        return false;
-    }
-
-    // MVLC Eth Jumbo Frames and Eth Receive Buffer Size =================================
-
-    if (mvlc.connectionType() == mvlc::ConnectionType::ETH)
-    {
-        bool enableJumboFrames = vmeConfig.getControllerSettings().value("mvlc_eth_enable_jumbos").toBool();
-
-        logger(QSL("  %1 jumbo frame support")
-               .arg(enableJumboFrames ? QSL("Enabling") : QSL("Disabling")));
-
-        if (auto ec = mvlc.writeRegister(mvlc::registers::jumbo_frame_enable, enableJumboFrames))
-        {
-            logger(QSL("Error %1 jumbo frames: %2")
-                   .arg(enableJumboFrames ? QSL("enabling") : QSL("disabling"))
-                   .arg(ec.message().c_str()));
-            return false;
-        }
-
-        if (auto eth = dynamic_cast<mvlc::eth::MVLC_ETH_Interface *>(mvlc.getImpl()))
-        {
-            auto counters = eth->getThrottleCounters();
-            logger(QSL("  Eth receive buffer size: %1")
-                   .arg(format_number(counters.rcvBufferSize, QSL("B"), UnitScaling::Binary, 0, 'f', 0)));
-        }
-    }
-
-    // Trigger IO ========================================================================
-
-    logger("  Applying MVLC Trigger & I/O setup");
-
-    if (auto ec = setup_trigger_io(mvlcCtrl, vmeConfig, logger))
-    {
-        logger(QSL("Error applying MVLC Trigger & I/O setup: %1").arg(ec.message().c_str()));
-        return false;
-    }
-
-    // Global DAQ Start Scripts ==========================================================
-
-    if (!run_init_func(vme_daq_run_global_daq_start_scripts, "Global DAQ Start Scripts"))
-        return false;
-
-    // Init Modules ======================================================================
-
-    if (!run_init_func(vme_daq_run_init_modules, "Modules Init"))
-        return false;
-
-    // Setup readout stacks ==============================================================
-
-    logger("");
-    logger("Setting up MVLC readout stacks");
-    if (auto ec = setup_readout_stacks(mvlc, vmeConfig, logger))
-    {
-        logger(QString("Error setting up readout stacks: %1").arg(ec.message().c_str()));
-        return false;
-    }
-
-
-    {
-        std::vector<u32> triggers;
-        std::error_code ec;
-        std::tie(triggers, ec) = get_trigger_values(vmeConfig, logger);
-
-        if (ec)
-        {
-            logger(QString("MVLC Stack Trigger setup error: %1").arg(ec.message().c_str()));
-            return false;
-        }
-    }
-
-    return true;
 }
 
 }

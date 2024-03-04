@@ -95,7 +95,9 @@ enum class TriggerCondition
     Input1FallingEdge,  // SIS3153
     Input2RisingEdge,   // SIS3153
     Input2FallingEdge,  // SIS3153
-    TriggerIO,          // MVLC via the Trigger I/O logic
+    TriggerIO,          // MVLC via the Trigger I/O logic.
+    MvlcStackTimer,     // New MVLC periodic events since MVLC FW0037.
+    MvlcOnSlaveTrigger, // New in MVLC FW0037: directly start stacks on slave trigger.
 };
 
 static const QMap<TriggerCondition, QString> TriggerConditionNames =
@@ -108,6 +110,8 @@ static const QMap<TriggerCondition, QString> TriggerConditionNames =
     { TriggerCondition::Input2RisingEdge,   "Input 2 Rising Edge" },
     { TriggerCondition::Input2FallingEdge,  "Input 2 Falling Edge" },
     { TriggerCondition::TriggerIO,          "MVLC Trigger I/O" },
+    { TriggerCondition::MvlcStackTimer,     "MVLC StackTimer" },
+    { TriggerCondition::MvlcOnSlaveTrigger, "MVLC On Master Trigger" },
 };
 
 static const QMap<DAQState, QString> DAQStateStrings =
@@ -189,9 +193,6 @@ struct ListFileOutputInfo
     QString directory;          // Path to the output directory. If it's not a
                                 // full path it's relative to the workspace directory.
                                 //
-    //QString fullDirectory;      // Always the full path to the listfile output directory.
-    //                            // This is transient and not stored in the workspace settings.
-
     int compressionLevel = 1;   // zlib/lz4 compression level
 
     QString prefix = QSL("mvmelst");
@@ -204,6 +205,8 @@ struct ListFileOutputInfo
 
     size_t splitSize = Gigabytes(1);
     std::chrono::seconds splitTime = std::chrono::seconds(3600);
+
+    QVariantMap options; // Additional format-dependent options can be stored here.
 };
 
 // listfile name without filename extensions

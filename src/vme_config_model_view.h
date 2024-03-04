@@ -4,208 +4,100 @@
 #include <QAbstractItemModel>
 #include <QTreeView>
 #include <QStandardItemModel>
+#include <QMimeData>
 #include "vme_config.h"
 #include "libmvme_export.h"
 
-namespace mesytec
-{
-namespace mvme
+namespace mesytec::mvme
 {
 
-class LIBMVME_EXPORT EventModel: public QAbstractItemModel
+enum ConfigItemType
+{
+    Unspecified,
+    MulticrateConfig,
+    VmeConfig,
+    Events,
+    Event,
+    Module,
+    ModuleReset,
+    EventModulesInit,
+    EventReadoutLoop,
+    EventMulticast,
+    VMEScript,
+    Container,
+};
+
+class VmeConfigItemModel: public QStandardItemModel
 {
     Q_OBJECT
+    signals:
+        void rootObjectChanged(ConfigObject *root);
+
     public:
-        EventModel(QObject *parent = nullptr)
-            : QAbstractItemModel(parent)
-        { }
-        ~EventModel() override;
+        using QStandardItemModel::QStandardItemModel;
+        ~VmeConfigItemModel() override;
 
-        void setEventConfig(EventConfig *eventConfig)
-        {
-            beginResetModel();
-            m_event = eventConfig;
-            endResetModel();
-        }
+        void setRootObject(ConfigObject *obj);
+        ConfigObject *getRootObject();
 
-        QModelIndex index(int row, int column,
-                          const QModelIndex &parent = QModelIndex()) const override
-        {
-            if (!parent.isValid())
-                return createIndex(row, column, m_event);
+        QStringList mimeTypes() const override;
 
-            if (parent.internalPointer() == m_event
-                && parent.row() < static_cast<int>(EventChildNodes.size()))
-                // FIXME: bad cast
-                return createIndex(row, column, (void *)&EventChildNodes[parent.row()]);
+        QMimeData *mimeData(const QModelIndexList &indexes) const override;
 
-            return {};
-        }
+        bool canDropMimeData(const QMimeData *data, Qt::DropAction action,
+                             int row, int column, const QModelIndex &parent) const override;
 
-        QModelIndex parent(const QModelIndex &child) const override
-        {
-            if (!child.isValid() || child.internalPointer() == m_event)
-                return {};
-
-            auto it = std::find_if(
-                std::begin(EventChildNodes), std::end(EventChildNodes),
-                [&child] (const QString &str)
-                {
-                    // FIXME: bad cast
-                    return child.internalPointer() == (void *)&str;
-                });
-
-            if (it != std::end(EventChildNodes))
-                return createIndex(0, 0, m_event);
-
-            return {};
-        }
-
-        int rowCount(const QModelIndex &parent = QModelIndex()) const override
-        {
-            if (!parent.isValid())
-                return 1;
-
-            if (parent.internalPointer() == m_event)
-                return EventChildNodes.size();
-
-            return 0;
-        }
-
-        int columnCount(const QModelIndex &parent = QModelIndex()) const override
-        {
-            if (!parent.isValid())
-                return 2;
-
-            return 2;
-        }
-
-        QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override
-        {
-            if (!m_event)
-                return {};
-
-            int row = index.row();
-            int col = index.column();
-
-            if (!parent(index).isValid())
-            {
-                if (col == 0)
-                {
-                    if (role == Qt::DisplayRole)
-                        return m_event->objectName();
-                    else if (role == Qt::DecorationRole)
-                        return QIcon(":/vme_event.png");
-                }
-            }
-
-            if (parent(index).isValid()
-                && parent(index).internalPointer() == m_event
-                && row < static_cast<int>(EventChildNodes.size())
-                && col == 0)
-            {
-                if (role == Qt::DisplayRole)
-                    return EventChildNodes[row];
-                else if (role == Qt::DecorationRole)
-                    return QIcon(":/folder_orange.png");
-            }
-
-            return {};
-        }
+        bool dropMimeData(const QMimeData *data, Qt::DropAction action,
+                          int row, int /*column*/, const QModelIndex &parent) override;
 
     private:
-        static const std::vector<QString> EventChildNodes;
-
-        EventConfig *m_event = nullptr;
+        ConfigObject *rootObject_ = nullptr;
 };
 
-class LIBMVME_EXPORT EventModel2: public QStandardItemModel
+void update_info_texts(VmeConfigItemModel *model);
+
+class VmeConfigItemController: public QObject
 {
     Q_OBJECT
     public:
-        EventModel2(QObject *parent = nullptr)
-            : QStandardItemModel(parent)
-            , m_eventRoot(
-                new QStandardItem(QIcon(":/vme_event.png"), QSL("Event")))
-            , m_eventInfo(
-                new QStandardItem)
-            , m_modulesInitRoot(
-                new QStandardItem(QIcon(":/folder_orange.png"), QSL("Modules Init")))
-            , m_readoutLoopRoot(
-                new QStandardItem(QIcon(":/folder_orange.png"), QSL("Readout Loop")))
-            , m_multicastRoot(
-                new QStandardItem(QIcon(":/folder_orange.png"), QSL("Multicast DAQ Start/Stop")))
-        {
-            m_eventRoot->appendRow(m_modulesInitRoot);
-            m_eventRoot->appendRow(m_readoutLoopRoot);
-            m_eventRoot->appendRow(m_multicastRoot);
-            invisibleRootItem()->appendRow({ m_eventRoot, m_eventInfo });
-        }
+        using QObject::QObject;
+        void setModel(VmeConfigItemModel *model);
+        void addView(QTreeView *view);
 
-        void setEventConfig(EventConfig *eventConfig)
-        {
-            beginResetModel();
-            if (m_event)
-                m_event->disconnect(this);
-
-            m_event = eventConfig;
-
-            // TODO: updating the item texts must happen dynamically when the eventconfig or any children are modified
-            m_eventRoot->setText(m_event->objectName());
-
-            QString infoText;
-
-            switch (eventConfig->triggerCondition)
-            {
-                case TriggerCondition::Interrupt:
-                    {
-                        infoText = QString("Trigger=IRQ%1")
-                            .arg(eventConfig->irqLevel);
-                    } break;
-                case TriggerCondition::NIM1:
-                    {
-                        infoText = QSL("Trigger=NIM");
-                    } break;
-                case TriggerCondition::Periodic:
-                    {
-                        infoText = QSL("Trigger=Periodic");
-                        if (auto vmeConfig = eventConfig->getVMEConfig())
-                        {
-                            if (is_mvlc_controller(vmeConfig->getControllerType()))
-                            {
-                                auto tp = eventConfig->getMVLCTimerPeriod();
-                                infoText += QSL(", every %1%2").arg(tp.first).arg(tp.second);
-                            }
-                        }
-                    } break;
-                default:
-                    {
-                        infoText = QString("Trigger=%1")
-                            .arg(TriggerConditionNames.value(eventConfig->triggerCondition));
-                    } break;
-            }
-            m_eventInfo->setText(infoText);
-            endResetModel();
-        }
+    private slots:
+        void onCrateAdded(VMEConfig *config);
+        void onCrateAboutToBeRemoved(VMEConfig *config);
+        void onEventAdded(EventConfig *config);
+        void onEventAboutToBeRemoved(EventConfig *config);
+        void onModuleAdded(ModuleConfig *config, int index = -1);
+        void onModuleAboutToBeRemoved(ModuleConfig *config);
+        void onObjectEnabledChanged(bool enabled);
 
     private:
-        EventConfig *m_event = nullptr;
-        QStandardItem *m_eventRoot,
-                      *m_eventInfo,
-                      *m_modulesInitRoot,
-                      *m_readoutLoopRoot,
-                      *m_multicastRoot;
-        std::vector<std::vector<QStandardItem *>> m_moduleRoots;
+        void connectToObjects(ConfigObject *root);
+        void disconnectFromObjects(ConfigObject *root);
+        VmeConfigItemModel *model_ = nullptr;
+        QVector<QTreeView *> views_;
 };
 
-class LIBMVME_EXPORT VmeConfigView: public QTreeView
+class VmeConfigTreeView: public QTreeView
 {
     Q_OBJECT
     public:
-        VmeConfigView(QObject *parent = nullptr);
+        VmeConfigTreeView(QWidget *parent = nullptr)
+            : QTreeView(parent)
+        {
+            setEditTriggers(QAbstractItemView::EditKeyPressed);
+            setDefaultDropAction(Qt::MoveAction); // internal DnD
+            setDragDropMode(QAbstractItemView::DragDrop); // external DnD
+            setDragDropOverwriteMode(false);
+            setDragEnabled(true);
+            show();
+            resize(500, 700);
+            resizeColumnToContents(0);
+        }
 };
 
-}
 }
 
 #endif /* __MVME_VME_CONFIG_MODEL_VIEW_H__ */

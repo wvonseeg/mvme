@@ -179,6 +179,7 @@ add_library(libmvme SHARED
     logfile_helper.cc
     mesytec_diagnostics.cc
     multi_crate.cc
+    multi_crate_gui.cc
     multi_crate_mainwindow.cc
     multi_event_splitter.cc
     multiplot_widget.cc
@@ -248,6 +249,7 @@ add_library(libmvme SHARED
     util/qt_eventfilters.cc
     util/qt_gui_io.cc
     util/qt_logview.cc
+    util/qt_model_view_util.cc
     util/qt_monospace_textedit.cc
     util/qt_plaintextedit.cc
     util/qwt_scalepicker.cpp
@@ -314,6 +316,7 @@ target_link_libraries(libmvme
     PUBLIC cpp11-on-multicore
     PUBLIC libmvme_resources
     PUBLIC mesytec-mvlc
+    PUBLIC nng
     PUBLIC yaml-cpp
     )
 

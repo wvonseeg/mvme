@@ -139,7 +139,7 @@ class LIBMVME_EXPORT ConfigObject: public QObject
         // Note: the watchDynamicProperties flag and
         // setWatchDynamicProperties() make it so that changes to dynamic
         // QObject properties mark this object as being modified.
-        ConfigObject(QObject *parent, bool watchDynamicProperties);
+        //ConfigObject(QObject *parent, bool watchDynamicProperties);
         bool eventFilter(QObject *obj, QEvent *event) override;
         void setWatchDynamicProperties(bool doWatch);
 
@@ -408,7 +408,7 @@ class LIBMVME_EXPORT EventConfig: public ConfigObject
         // pair. Only valid for periodic events.
         // See EventConfigDialog for how the information is stored in
         // triggerOptions.
-        std::pair<unsigned, QString> getMVLCTimerPeriod()
+        std::pair<unsigned, QString> getMVLCTimerPeriod() const
         {
             return std::make_pair(triggerOptions["mvlc.timer_period"].toUInt(),
                                   triggerOptions["mvlc.timer_base"].toString());
@@ -496,6 +496,10 @@ class LIBMVME_EXPORT VMEConfig: public ConfigObject
         const ContainerObject &getGlobalObjectRoot() const;
         ContainerObject &getGlobalObjectRoot();
 
+        ContainerObject *getGlobalStartsScripts() { return getGlobalObjectRoot().findChild<ContainerObject *>("daq_start"); }
+        ContainerObject *getGlobalStopScripts() { return getGlobalObjectRoot().findChild<ContainerObject *>("daq_stop"); }
+        ContainerObject *getGlobalManualScripts() { return getGlobalObjectRoot().findChild<ContainerObject *>("manual"); }
+
         // Special accessor to find the MVLC Trigger IO config
         VMEScriptConfig *getMVLCTriggerIOScript() const
         {
@@ -534,7 +538,5 @@ QString make_unique_event_name(const QString &prefix, const VMEConfig *vmeConfig
 QString make_unique_event_name(const VMEConfig *vmeConfig);
 QString make_unique_module_name(const QString &prefix, const VMEConfig *vmeConfig);
 QString make_unique_name(const ConfigObject *co, const ContainerObject *destContainer);
-
-void move_module(ModuleConfig *module, EventConfig *destEvent, int destIndex);
 
 #endif

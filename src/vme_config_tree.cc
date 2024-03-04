@@ -47,6 +47,7 @@
 #include "mvme_stream_worker.h"
 #include "template_system.h"
 #include "treewidget_utils.h"
+#include "util/qt_fs.h"
 #include "util/qt_gui_io.h"
 #include "vme_config.h"
 #include "vme_config_scripts.h"
@@ -57,7 +58,9 @@
 
 using namespace std::placeholders;
 using namespace vats;
-using namespace mvme::vme_config;
+using namespace mesytec;
+using namespace mesytec::mvme;
+using namespace mesytec::mvme::vme_config;
 
 static const QString VMEModuleConfigFileFilter = QSL("MVME Module Configs (*.mvmemodule *.json);; All Files (*.*)");
 static const QString VMEEventConfigFileFilter = QSL("MVME Event Configs (*.mvmeevent *.json);; All Files (*.*)");
@@ -1163,32 +1166,6 @@ void VMEConfigTreeWidget::onItemChanged(QTreeWidgetItem *item, int column)
     }
 }
 
-void store_configobject_expanded_state(const QUuid &objectId, bool isExpanded)
-{
-    QSettings settings("vme_tree_ui_state.ini", QSettings::IniFormat);
-    auto expandedObjects = settings.value("ExpandedObjects").toMap();
-
-    if (isExpanded)
-    {
-        qDebug() << "ConfigObject expanded, id =" << objectId;
-        expandedObjects.insert(objectId.toString(), true);
-    }
-    else
-    {
-        qDebug() << "ConfigObject collapsed, id =" << objectId;
-        expandedObjects.remove(objectId.toString());
-    }
-
-    settings.setValue("ExpandedObjects", expandedObjects);
-}
-
-bool was_configobject_expanded(const QUuid &objectId)
-{
-    QSettings settings("vme_tree_ui_state.ini", QSettings::IniFormat);
-    auto expandedObjects = settings.value("ExpandedObjects").toMap();
-    return expandedObjects.value(objectId.toString(), false).toBool();
-}
-
 void VMEConfigTreeWidget::onItemExpanded(QTreeWidgetItem *item)
 {
     if (auto obj = get_qobject<ConfigObject>(item))
@@ -1610,35 +1587,7 @@ void VMEConfigTreeWidget::onEventAdded(EventConfig *eventConfig, bool expandNode
         node->setText(0, eventConfig->objectName());
         //node->setCheckState(0, eventConfig->isEnabled() ? Qt::Checked : Qt::Unchecked);
 
-        QString infoText;
-
-        switch (eventConfig->triggerCondition)
-        {
-            case TriggerCondition::Interrupt:
-                {
-                    infoText = QString("Trigger=IRQ%1")
-                        .arg(eventConfig->irqLevel);
-                } break;
-            case TriggerCondition::NIM1:
-                {
-                    infoText = QSL("Trigger=NIM");
-                } break;
-            case TriggerCondition::Periodic:
-                {
-                    infoText = QSL("Trigger=Periodic");
-                    if (is_mvlc_controller(m_config->getControllerType()))
-                    {
-                        auto tp = eventConfig->getMVLCTimerPeriod();
-                        infoText += QSL(", every %1%2").arg(tp.first).arg(tp.second);
-                    }
-                } break;
-            default:
-                {
-                    infoText = QString("Trigger=%1")
-                        .arg(TriggerConditionNames.value(eventConfig->triggerCondition));
-                } break;
-        }
-
+        auto infoText = info_text(eventConfig);
         node->setText(1, infoText);
     };
 
@@ -1679,9 +1628,7 @@ void VMEConfigTreeWidget::onModuleAdded(ModuleConfig *module, int moduleIndex)
         node->readoutNode->setText(0, module->objectName());
         //node->setCheckState(0, module->isEnabled() ? Qt::Checked : Qt::Unchecked);
 
-        QString infoText = QString("Type=%1, Address=0x%2")
-            .arg(module->getModuleMeta().displayName)
-            .arg(module->getBaseAddress(), 8, 16, QChar('0'));
+        auto infoText = info_text(module);
 
         node->setText(1, infoText);
     };
@@ -2257,7 +2204,6 @@ void VMEConfigTreeWidget::removeGlobalScript()
     if (script && m_config->removeGlobalScript(script))
     {
         delete m_treeMap.take(script);  // delete the node
-        script->deleteLater();          // delete the script
     }
 }
 
@@ -2406,17 +2352,12 @@ void VMEConfigTreeWidget::updateConfigLabel()
     QString fileName = m_configFilename;
 
     if (fileName.isEmpty())
+    {
         fileName = QSL("<not saved>");
+    }
 
     if (m_config && m_config->isModified())
         fileName += QSL(" *");
-
-    auto wsDir = m_workspaceDirectory + '/';
-
-    if (fileName.startsWith(wsDir))
-    {
-        fileName.remove(wsDir);
-    }
 
     le_fileName->setText(fileName);
     le_fileName->setToolTip(fileName);

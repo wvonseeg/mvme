@@ -2,6 +2,7 @@
     "files.associations": {
         "*.analysis": "json",
         "*.mvmemodule": "json",
-        "*.tcc": "cpp"
-    }
+        "system_error": "cpp",
+        "string_view": "cpp"
+    },
 }

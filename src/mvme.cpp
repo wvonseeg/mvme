@@ -95,6 +95,7 @@
 #include <spdlog/sinks/qt_sinks.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
+using namespace mesytec;
 using namespace mesytec::mvme;
 using namespace vats;
 
@@ -163,16 +164,30 @@ MVMEMainWindow::MVMEMainWindow(QWidget *parent, const MVMEOptions &options)
     m_d->m_context              = new MVMEContext(this, this, options);
 
 #if 1
-    auto consolesink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    auto qtsink = std::make_shared<spdlog::sinks::qt_sink_mt>(m_d->m_context, "logMessageRaw");
-    auto dupfilter = std::make_shared<spdlog::sinks::dup_filter_sink_mt>(std::chrono::seconds(2));
-    dupfilter->add_sink(consolesink);
-    dupfilter->add_sink(qtsink);
+    // Setup some of the mesytec-mvlc loggers to also log to the gui.
+    {
+        auto consolesink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+        auto qtsink = std::make_shared<spdlog::sinks::qt_sink_mt>(m_d->m_context, "logMessageRaw");
+        auto dupfilter = std::make_shared<spdlog::sinks::dup_filter_sink_mt>(std::chrono::seconds(2));
+        dupfilter->add_sink(consolesink);
+        dupfilter->add_sink(qtsink);
 
-    auto loggerNames = { "listfile", "readout_worker", "replay", "readout_parser" };
+        auto loggerNames =
+        {
+             "listfile", "readout_worker", "replay", "readout_parser",
+             "mvlc_listfile_zmq_ganil"
+        };
 
-    for (const auto &loggerName: loggerNames)
-        mesytec::mvlc::create_logger(loggerName, { dupfilter });
+        for (const auto &loggerName: loggerNames)
+            mesytec::mvlc::create_logger(loggerName, { dupfilter });
+
+        // Another filter for the "mvlc" logger: only "error" level messages are
+        // passed through to the gui.
+        auto mvlcLogFilter = std::make_shared<spdlog::sinks::dup_filter_sink_mt>(std::chrono::seconds(2));
+        mvlcLogFilter->set_level(spdlog::level::err);
+        mvlcLogFilter->add_sink(qtsink);
+        mesytec::mvlc::create_logger("mvlc", { mvlcLogFilter, consolesink });
+    }
 #endif
 
     m_d->centralWidget          = new QWidget(this);
@@ -2135,9 +2150,20 @@ void MVMEMainWindow::onVMEModuleMoved(ModuleConfig *mod, EventConfig *sourceEven
 
 void MVMEMainWindow::runVMEControllerSettingsDialog()
 {
-    VMEControllerSettingsDialog dialog(m_d->m_context);
+    // XXX: weird asymmetry here: settings are obtained from the vme config
+    // but the controller is set on the MVMEContext object.
+    auto vmeConfig = m_d->m_context->getVMEConfig();
+
+    VMEControllerSettingsDialog dialog;
     dialog.setWindowModality(Qt::ApplicationModal);
-    dialog.exec();
+    dialog.setCurrentController(vmeConfig->getControllerType(), vmeConfig->getControllerSettings());
+
+    if (dialog.exec() == QDialog::Accepted)
+    {
+        auto controllerType = dialog.getControllerType();
+        auto controllerSettings = dialog.getControllerSettings();
+        m_d->m_context->setVMEController(controllerType, controllerSettings);
+    }
 }
 
 void MVMEMainWindow::runDAQRunSettingsDialog()

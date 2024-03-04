@@ -30,6 +30,7 @@
 #include "util_zip.h"
 #include "vme_config_util.h"
 
+using namespace mesytec;
 
 namespace
 {
@@ -374,6 +375,8 @@ void LIBMVME_EXPORT new_vme_config(MVMEContext *context)
             mvlcTriggerIO->setScriptContents(vats::read_default_mvlc_trigger_io_script().contents);
         }
     }
+
+    vmeConfig->setModified(false);
 
     context->setVMEConfig(vmeConfig);
     context->setVMEConfigFilename(QString());

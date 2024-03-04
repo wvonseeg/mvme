@@ -57,9 +57,7 @@ u8 get_next_mcst(const VMEConfig *vmeConfig)
 
 } // end anon namespace
 
-namespace mvme
-{
-namespace vme_config
+namespace mesytec::mvme::vme_config
 {
 
 u8 get_next_free_irq(const VMEConfig *vmeConfig)
@@ -320,6 +318,53 @@ bool serialize_vme_config_to_device(QIODevice &out, const VMEConfig &config)
     return out.write(doc.toJson()) >= 0;
 }
 
+QJsonDocument serialize_multicrate_config_to_json_document(const multi_crate::MulticrateVMEConfig &config)
+{
+    QJsonObject configJson;
+    config.write(configJson);
+
+    QJsonObject outerJson;
+    outerJson["MulticrateConfig"] = configJson;
+
+    return QJsonDocument(outerJson);
+}
+
+std::unique_ptr<ConfigObject> deserialize_object(const QJsonObject &json)
+{
+    std::unique_ptr<ConfigObject> result;
+
+    if (auto it = json.begin(); it != json.end())
+    {
+        if (it.key() == "DAQConfig")
+            result = configobject_from_json<VMEConfig>(json, it.key());
+
+        if (it.key() == "MulticrateConfig")
+            result = configobject_from_json<multi_crate::MulticrateVMEConfig>(json, it.key());
+    }
+
+    return result;
+}
+
+QJsonDocument serialize_object(const ConfigObject *obj)
+{
+    if (auto vmeConfig = qobject_cast<const VMEConfig *>(obj))
+    {
+        return serialize_vme_config_to_json_document(*vmeConfig);
+    }
+    else if (auto multicrateConfig = qobject_cast<const multi_crate::MulticrateVMEConfig *>(obj))
+    {
+        return serialize_multicrate_config_to_json_document(*multicrateConfig);
+    }
+
+    return {};
+}
+
+bool serialize_multicrate_config_to_device(QIODevice &out, const multi_crate::MulticrateVMEConfig &config)
+{
+    auto doc = serialize_multicrate_config_to_json_document(config);
+    return out.write(doc.toJson()) >= 0;
+}
+
 std::unique_ptr<ModuleConfig> moduleconfig_from_modulejson(const QJsonObject &json)
 {
     auto mod = std::make_unique<ModuleConfig>();
@@ -458,5 +503,34 @@ std::pair<VMEControllerType, QVariantMap> mvlc_settings_from_url(const std::stri
     return std::make_pair(controllerType, controllerSettings);
 }
 
-} // end namespace vme_config
-} // end namespace mvme
+void move_module(ModuleConfig *mod, EventConfig *destEvent, int destIndex)
+{
+    auto sourceEvent = mod->getEventConfig();
+
+    qDebug() << __PRETTY_FUNCTION__
+        << "module=" << mod
+        << ", sourceEvent=" << sourceEvent
+        << ", destEvent=" << destEvent
+        << ", destIndex=" << destIndex;
+
+    if (sourceEvent)
+    {
+        // TODO: adjust destIndex if the module is moved down inside its parent event
+        sourceEvent->removeModuleConfig(mod);
+    }
+
+    destEvent->addModuleConfig(mod, destIndex);
+}
+
+void copy_module(ModuleConfig *mod, EventConfig *destEvent, int destIndex)
+{
+    qDebug() << __PRETTY_FUNCTION__
+        << "module=" << mod
+        << ", destEvent=" << destEvent
+        << ", destIndex=" << destIndex;
+
+    auto copy = clone_config_object(*mod);
+    destEvent->addModuleConfig(copy.release(), destIndex);
+}
+
+}

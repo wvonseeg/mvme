@@ -37,11 +37,11 @@ class MVLC_VMEController;
 
 using Logger = std::function<void (const QString &)>;
 
+std::error_code LIBMVME_EXPORT
+    check_config(const mvlc::MVLC &mvlc, const VMEConfig &vmeConfig, Logger logger);
+
 std::pair<std::vector<u32>, std::error_code> LIBMVME_EXPORT get_trigger_values(
     const VMEConfig &vmeConfig, Logger logger = [] (const QString &) {});
-
-std::error_code LIBMVME_EXPORT
-    enable_triggers(MVLCObject &mvlc, const VMEConfig &vmeConfig, Logger logger);
 
 std::error_code LIBMVME_EXPORT
     disable_all_triggers_and_daq_mode(MVLCObject &mvlc);
@@ -70,18 +70,25 @@ void LIBMVME_EXPORT update_trigger_io_inplace(const VMEConfig &vmeConfig);
 
 mvlc::StackCommandBuilder LIBMVME_EXPORT make_module_init_stack(const VMEConfig &vmeConfig);
 
-// Removes non-output-producing command groups from each of the readout
-// stacks. This is done because the converted CrateConfig contains
-// groups for the "Cycle Start" and "Cycle End" event scripts which do
-// not produce any output. Having a Cycle Start script (called
-// "readout_start" in the CrateConfig) will confuse the readout parser
-// because the readout stack group indexes and the mvme module indexes
-// won't match up.
+// Removes non-output-producing command groups from each of the readout stacks.
+// This is done because the converted CrateConfig contains groups for the "Cycle
+// Start" and "Cycle End" event scripts, which do not produce any output. Having
+// a Cycle Start script (called "readout_start" in the CrateConfig) will confuse
+// the readout parser because the readout stack group indexes and the mvme
+// module indexes won't match up.
 std::vector<mvlc::StackCommandBuilder> LIBMVME_EXPORT sanitize_readout_stacks(
     const std::vector<mvlc::StackCommandBuilder> &inputStacks);
 
 // Adapter from the mvme ListFileOutputInfo to the mvlc SplitListfileSetup.
 mvlc::listfile::SplitListfileSetup make_listfile_setup(ListFileOutputInfo &outInfo, const std::vector<u8> &preamble = {});
+
+bool LIBMVME_EXPORT run_daq_start_sequence(
+    mesytec::mvme_mvlc::MVLC_VMEController *mvlcCtrl,
+    VMEConfig &vmeConfig,
+    bool ignoreStartupErrors,
+    std::function<void (const QString &)> logger,
+    std::function<void (const QString &)> error_logger);
+
 
 } // end namespace mvme_mvlc
 } // end namespace mesytec

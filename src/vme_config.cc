@@ -81,12 +81,14 @@ std::error_code make_error_code(VMEConfigReadResult r)
 //
 // ConfigObject
 //
+#if 0
 ConfigObject::ConfigObject(QObject *parent, bool watchDynamicProperties)
     : ConfigObject(parent)
 {
     if (watchDynamicProperties)
         setWatchDynamicProperties(true);
 }
+#endif
 
 ConfigObject::ConfigObject(QObject *parent)
     : QObject(parent)
@@ -1202,20 +1204,4 @@ QString make_unique_name(const ConfigObject *co, const ContainerObject *destCont
     }
 
     return result;
-}
-
-void move_module(ModuleConfig *module, EventConfig *destEvent, int destIndex)
-{
-    auto sourceEvent = module->getEventConfig();
-
-    qDebug() << __PRETTY_FUNCTION__
-        << "module=" << module
-        << ", sourceEvent=" << sourceEvent
-        << ", destEvent=" << destEvent
-        << ", destIndex=" << destIndex;
-
-    if (sourceEvent)
-        sourceEvent->removeModuleConfig(module);
-
-    destEvent->addModuleConfig(module, destIndex);
 }

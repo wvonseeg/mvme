@@ -1,13 +1,18 @@
 #include "multi_crate.h"
 
 #include <cassert>
-#include <stdexcept>
 #include <mesytec-mvlc/mesytec-mvlc.h>
-#include "vme_config_scripts.h"
+#include <QDir>
+#include <stdexcept>
 
-namespace mesytec
-{
-namespace multi_crate
+#include "util/mesy_nng.h"
+#include "util/qt_fs.h"
+#include "vme_config_scripts.h"
+#include "vme_config_util.h"
+
+using namespace mesytec::mvlc;
+
+namespace mesytec::mvme::multi_crate
 {
 
 MulticrateVMEConfig::MulticrateVMEConfig(QObject *parent)
@@ -430,5 +435,343 @@ void multi_crate_playground()
     CrateReadout crateReadout2(std::move(crateReadout));
 }
 
+MulticrateTemplates read_multicrate_templates()
+{
+    MulticrateTemplates result;
+    auto dir = QDir(vats::get_template_path());
+
+    result.mainStartEvent = vme_config::eventconfig_from_file(dir.filePath("multicrate/main_start_event.mvmeevent"));
+    result.secondaryStartEvent = vme_config::eventconfig_from_file(dir.filePath("multicrate/secondary_start_event.mvmeevent"));
+    result.stopEvent = vme_config::eventconfig_from_file(dir.filePath("multicrate/stop_event.mvmeevent"));
+    result.dataEvent = vme_config::eventconfig_from_file(dir.filePath("multicrate/data_event0.mvmeevent"));
+
+    result.setMasterModeScript = read_text_file(dir.filePath("multicrate/set_master_mode.vmescript"));
+    result.setSlaveModeScript  = read_text_file(dir.filePath("multicrate/set_slave_mode.vmescript"));
+    result.triggerIoScript     = read_text_file(dir.filePath("multicrate/mvlc_trigger_io.vmescript"));
+
+    return result;
 }
+
+std::unique_ptr<MulticrateVMEConfig> make_multicrate_config(size_t numCrates)
+{
+    auto templates = multi_crate::read_multicrate_templates();
+    auto result = std::make_unique<MulticrateVMEConfig>();
+
+    {
+        auto mainCrate = std::make_unique<VMEConfig>();
+        mainCrate->setObjectName("crate0");
+        mainCrate->setVMEController(VMEControllerType::MVLC_ETH);
+        mainCrate->addEventConfig(vme_config::clone_config_object(*templates.mainStartEvent).release());
+        mainCrate->addEventConfig(vme_config::clone_config_object(*templates.stopEvent).release());
+        mainCrate->addEventConfig(vme_config::clone_config_object(*templates.dataEvent).release());
+        auto setModeScript = std::make_unique<VMEScriptConfig>();
+        setModeScript->setObjectName("set master mode");
+        setModeScript->setScriptContents(templates.setMasterModeScript);
+        mainCrate->addGlobalScript(setModeScript.release(), "daq_start");
+        if (auto triggerIo = mainCrate->getMVLCTriggerIOScript())
+            triggerIo->setScriptContents(templates.triggerIoScript);
+        result->addCrateConfig(mainCrate.release());
+    }
+
+    for (size_t crateId = 1; crateId < numCrates; ++crateId)
+    {
+        auto crateConfig = std::make_unique<VMEConfig>();
+        crateConfig->setObjectName(fmt::format("crate{}", crateId).c_str());
+        crateConfig->setVMEController(VMEControllerType::MVLC_ETH);
+        crateConfig->addEventConfig(vme_config::clone_config_object(*templates.secondaryStartEvent).release());
+        crateConfig->addEventConfig(vme_config::clone_config_object(*templates.stopEvent).release());
+        crateConfig->addEventConfig(vme_config::clone_config_object(*templates.dataEvent).release());
+        auto setModeScript = std::make_unique<VMEScriptConfig>();
+        setModeScript->setObjectName("set slave mode");
+        setModeScript->setScriptContents(templates.setSlaveModeScript);
+        crateConfig->addGlobalScript(setModeScript.release(), "daq_start");
+        if (auto triggerIo = crateConfig->getMVLCTriggerIOScript())
+            triggerIo->setScriptContents(templates.triggerIoScript);
+        result->addCrateConfig(crateConfig.release());
+    }
+
+    return result;
+}
+
+size_t fixup_listfile_buffer_message(const mvlc::ConnectionType &bufferType, nng_msg *msg, std::vector<u8> &tmpBuf)
+{
+    size_t bytesMoved = 0u;
+    const u8 *msgBufferData = reinterpret_cast<const u8 *>(nng_msg_body(msg)) + sizeof(ListfileBufferMessageHeader);
+    const auto msgBufferSize = nng_msg_len(msg) - sizeof(ListfileBufferMessageHeader);
+
+    if (bufferType == mvlc::ConnectionType::USB)
+        bytesMoved = mvlc::fixup_buffer_mvlc_usb(msgBufferData, msgBufferSize, tmpBuf);
+    else
+        bytesMoved = mvlc::fixup_buffer_mvlc_eth(msgBufferData, msgBufferSize, tmpBuf);
+
+    nng_msg_chop(msg, bytesMoved);
+
+    return bytesMoved;
+}
+
+struct TimetickGenerator
+{
+    public:
+        const std::chrono::seconds TimetickInterval = std::chrono::seconds(1);
+
+        void readoutStart(listfile::WriteHandle &wh, u8 crateId)
+        {
+            // Write the initial timestamp in a BeginRun section
+            listfile_write_timestamp_section(wh, crateId, system_event::subtype::BeginRun);
+            tLastTick_ = std::chrono::steady_clock::now();
+        }
+
+        void readoutStop(listfile::WriteHandle &wh, u8 crateId)
+        {
+            // Write the final timestamp in an EndRun section.
+            listfile_write_timestamp_section(wh, crateId, system_event::subtype::EndRun);
+        }
+
+        void operator()(listfile::WriteHandle &wh, u8 crateId)
+        {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = now - tLastTick_;
+
+            if (elapsed >= TimetickInterval)
+            {
+                listfile_write_timestamp_section(wh, crateId, system_event::subtype::UnixTimetick);
+                tLastTick_ = now;
+            }
+        }
+
+    private:
+        std::chrono::time_point<std::chrono::steady_clock> tLastTick_ = {};
+};
+
+void allocate_prepare_output_message(ReadoutProducerContext &context, ListfileBufferMessageHeader &header)
+{
+    // Header + space for data plus some margin so that readout_usb() does not
+    // have to realloc.
+    constexpr size_t allocSize = sizeof(header) +  mvlc::util::Megabytes(1) + 256;
+
+    if (auto res = allocate_reserve_message(&context.outputMessage, allocSize))
+        throw std::runtime_error(fmt::format("mvlc_readout_loop: error allocating output message: {}", nng_strerror(res)));
+
+    if (auto res = nng_msg_append(context.outputMessage, &header, sizeof(header)))
+        throw std::runtime_error(fmt::format("mvlc_readout_loop: error allocating output message: {}", nng_strerror(res)));
+
+    context.msgWriteHandle.setMessage(context.outputMessage);
+    ++header.messageNumber;
+}
+
+void flush_output_message(ReadoutProducerContext &context)
+{
+    if (auto res = nng_sendmsg(context.outputSocket, context.outputMessage, 0))
+        throw std::runtime_error(fmt::format("mvlc_readout_loop: error flushing output message: {}", nng_strerror(res)));
+
+    context.outputMessage = nullptr;
+    context.msgWriteHandle.setMessage(nullptr);
+}
+
+static constexpr std::chrono::milliseconds FlushBufferTimeout(500);
+
+// Assumptions:
+// - the data pipe is locked, so read_unbuffered() can be called freely
+// - the output message has enough reserved space available to store
+//   usb::USBStreamPipeReadSize bytes.
+std::error_code readout_usb(
+    usb::MVLC_USB_Interface *mvlcUSB,
+    nng_msg *msg,
+    size_t &totalBytesTransferred,
+    std::vector<u8> &tmpBuf)
+{
+    assert(allocated_free_space(msg) >= usb::USBStreamPipeReadSize);
+
+    auto tStart = std::chrono::steady_clock::now();
+    size_t msgUsed = nng_msg_len(msg);
+    size_t msgCapacity = nng_msg_capacity(msg);
+
+    // Resize the message to the reserved space. This does not cause a realloc.
+    nng_msg_realloc(msg, msgCapacity);
+
+    while ((msgCapacity - msgUsed) >= usb::USBStreamPipeReadSize)
+    {
+        if (auto elapsed = std::chrono::steady_clock::now() - tStart;
+            elapsed >= FlushBufferTimeout)
+        {
+            break;
+        }
+
+        size_t bytesTransferred = 0u;
+
+        auto ec = mvlcUSB->read_unbuffered(
+            Pipe::Data,
+            static_cast<u8 *>(nng_msg_body(msg)) + msgUsed,
+            usb::USBStreamPipeReadSize,
+            bytesTransferred);
+
+        if (ec == ErrorType::ConnectionError)
+            return ec;
+
+        msgUsed += bytesTransferred;
+        totalBytesTransferred += bytesTransferred;
+    }
+
+    // Resize the message to the space that's actually used.
+    nng_msg_realloc(msg, msgUsed);
+
+    // Move trailing data to tmpBuf
+    const u8 *msgBufferData = reinterpret_cast<const u8 *>(nng_msg_body(msg))
+        + sizeof(ListfileBufferMessageHeader);
+    const auto msgBufferSize = nng_msg_len(msg) - sizeof(ListfileBufferMessageHeader);
+
+    size_t bytesMoved = fixup_buffer_mvlc_usb(msgBufferData, msgBufferSize, tmpBuf);
+
+    nng_msg_chop(msg, bytesMoved);
+
+    return {};
+}
+
+// Assumptions:
+// - the data pipe is locked, so read_packet() can be called freely
+// - the output message has reserved space available to store packet data
+std::error_code readout_eth(
+    eth::MVLC_ETH_Interface *mvlcETH,
+    nng_msg *msg,
+    size_t &totalBytesTransferred)
+{
+    auto tStart = std::chrono::steady_clock::now();
+    size_t msgUsed = nng_msg_len(msg);
+    size_t msgCapacity = nng_msg_capacity(msg);
+
+    // Resize the message to the reserved space. This does not cause a realloc.
+    nng_msg_realloc(msg, msgCapacity);
+
+    while ((msgCapacity - msgUsed) >= eth::JumboFrameMaxSize)
+    {
+        if (auto elapsed = std::chrono::steady_clock::now() - tStart;
+            elapsed >= FlushBufferTimeout)
+        {
+            break;
+        }
+
+        auto readResult = mvlcETH->read_packet(
+            Pipe::Data,
+            static_cast<u8 *>(nng_msg_body(msg)) + msgUsed,
+            msgCapacity - msgUsed);
+
+        if (readResult.ec == ErrorType::ConnectionError)
+            return readResult.ec;
+
+        if (readResult.ec == MVLCErrorCode::ShortRead)
+        {
+            // TODO: counters.access()->ethShortReads++;
+            continue;
+        }
+
+        msgUsed += readResult.bytesTransferred;
+        totalBytesTransferred += readResult.bytesTransferred;
+        // TODO: count_stack_hits(result, stackHits);
+    }
+
+    // Resize the message to the space that's actually used.
+    nng_msg_realloc(msg, msgUsed);
+
+    //
+    return {};
+}
+
+void mvlc_readout_loop(ReadoutProducerContext &context, std::atomic<bool> &quit) // throws on error
+{
+    auto logger = mvlc::get_logger("mvlc_readout_loop");
+    logger->info("mvlc_readout_loop starting for crate{} with MVLC {}", context.crateId, context.mvlc.connectionInfo());
+
+    std::vector<u8> tmpBuf;
+    auto &mvlc = context.mvlc;
+    eth::MVLC_ETH_Interface *mvlcEth = nullptr;
+    usb::MVLC_USB_Interface *mvlcUsb = nullptr;
+
+    if (mvlc.connectionType() == ConnectionType::ETH)
+        mvlcEth = dynamic_cast<eth::MVLC_ETH_Interface *>(mvlc.getImpl());
+    else if (mvlc.connectionType() == ConnectionType::USB)
+        mvlcUsb = dynamic_cast<usb::MVLC_USB_Interface *>(mvlc.getImpl());
+
+    if (!mvlcEth && !mvlcUsb)
+        throw std::runtime_error("Could not determine MVLC type. Expected USB or ETH.");
+
+    ListfileBufferMessageHeader header{};
+    header.messageType = MessageType::ListfileBuffer;
+    header.messageNumber = 1;
+    // TODO: don't actually need to know the buffer type. Can detect when parsing.
+    header.bufferType = static_cast<u32>(mvlcEth ? ConnectionType::ETH : ConnectionType::USB);
+
+    allocate_prepare_output_message(context, header);
+    TimetickGenerator timetickGen;
+    timetickGen.readoutStart(context.msgWriteHandle, context.crateId);
+
+    while (!quit)
+    {
+        if (!context.outputMessage)
+            allocate_prepare_output_message(context, header);
+
+        // run the timetick generator
+        timetickGen(context.msgWriteHandle, context.crateId);
+
+        // move trailing data from last readout cycle to the current output message
+        nng_msg_append(context.outputMessage, tmpBuf.data(), tmpBuf.size());
+        tmpBuf.clear();
+
+        // The actual readout. The readout_* functions will return when either
+        // the output message is filled up to the reserved space or the flush
+        // buffer timeout is exceeded.
+        {
+            auto dataGuard = mvlc.getLocks().lockData();
+            std::error_code ec;
+            size_t bytesTransferred = 0u;
+
+            if (mvlcEth)
+                ec = readout_eth(mvlcEth, context.outputMessage, bytesTransferred);
+            else
+                ec = readout_usb(mvlcUsb, context.outputMessage, bytesTransferred, tmpBuf);
+
+            // TODO: handle ec: timeouts, fatal errors
+
+            flush_output_message(context);
+        }
+    }
+
+    timetickGen.readoutStop(context.msgWriteHandle, context.crateId);
+}
+
+void mvlc_readout_consumer(ReadoutConsumerContext &context, std::atomic<bool> &quit)
+{
+    u32 lastMessageNumber = 0;
+
+    while (!quit)
+    {
+        nng_msg *msg = {};
+
+        if (auto res = receive_message(context.inputSocket, &msg, 0))
+        {
+            if (res != NNG_ETIMEDOUT)
+                throw std::runtime_error(fmt::format("mvlc_readout_consumer: internal error: {}", nng_strerror(res)));
+            continue;
+        }
+
+        if (nng_msg_len(msg) < sizeof(ListfileBufferMessageHeader))
+        {
+            // TODO: count this error (should not happen)
+            nng_msg_free(msg);
+            msg = {};
+            continue;
+        }
+
+        auto header = *reinterpret_cast<ListfileBufferMessageHeader *>(nng_msg_body(msg));
+        if (auto loss = readout_parser::calc_buffer_loss(header.messageNumber, lastMessageNumber))
+            spdlog::warn("mvlc_readout_consumer: lost {} messages!", loss);
+        lastMessageNumber = header.messageNumber;
+        nng_msg_trim(msg, sizeof(ListfileBufferMessageHeader));
+
+        auto dataPtr = reinterpret_cast<const u32 *>(nng_msg_body(msg));
+        size_t dataSize = nng_msg_len(msg) / sizeof(u32);
+
+        std::basic_string_view<u32> dataView(dataPtr, dataSize);
+    }
+}
+
 }

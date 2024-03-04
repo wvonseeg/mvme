@@ -4,6 +4,51 @@
 Changelog
 ##################################################
 
+Version 1.11.0
+--------------
+
+* Support for new MVLC firmware FW0037 features:
+
+  - The 4 new StackTimer units can now be used to create periodic readout events
+    without having to use ``TriggerResource`` and ``StackStart`` units.
+
+  - New event trigger condition to activate command stacks on one of the master
+    trigger signals.
+
+  - The total number of MVLC command stacks has been raised from 8 to 16, so now
+    15 command stacks are available for readout events.
+
+* mvlc:
+
+  - The default Trigger I/O script is now empty as the previous default script
+    was confusing.
+
+  - Remember last connected ETH hostname and other settings when switching
+    controller types.
+
+  - Add more utility VME scripts for the MVLC related to multicrate master/slave
+    handling.
+
+  - Trigger I/O DSO: Fix simulation of strobed LUT outputs.
+
+* analysis:
+
+  - histo1d: log scale plotting and stat calculation fixes
+
+  - ExportSink: updates to the generated code: port to python3, require
+    cmake 3.0, suppress compiler warnings, do not force c++14 but pick the
+    standard used by ROOT instead. Tested with python-3.11.
+
+* Only attempt to connect to VME controllers once instead of multiple times to
+  reduce log spam and wait time in case of errors.
+
+* Crash fix with old mvmelst formatted data and multi event splitting.
+
+Version 1.10.4
+--------------
+
+* analysis: Fix bug leading to ExportSink output files being truncated on listfile load.
+
 Version 1.10.3
 --------------
 

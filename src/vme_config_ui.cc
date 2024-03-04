@@ -47,11 +47,12 @@
 
 #include "analysis/analysis.h"
 #include "data_filter_edit.h"
+#include "mvlc/mvlc_trigger_io.h"
 #include "qt-collapsible-section/Section.h"
 #include "vme_config.h"
-#include "vme_script.h"
 #include "vme_config_ui_variable_editor.h"
 #include "vme_config_util.h"
+#include "vme_script.h"
 
 using namespace mesytec;
 using namespace vats;
@@ -72,6 +73,8 @@ struct EventConfigDialogPrivate
 
     QComboBox *combo_mvlcTimerBase;
     QDoubleSpinBox *spin_timerPeriod;
+    QSpinBox *spin_stackTimerPeriod;
+    QSpinBox *spin_mvlcSlaveTriggerIndex;
 
     QCheckBox *cb_irqUseIACK;
 
@@ -171,7 +174,23 @@ EventConfigDialog::EventConfigDialog(
     irqLayout->addRow(QSL("IRQ Level"), m_d->spin_irqLevel);
     irqLayout->addRow(QSL("IRQ Vector"), m_d->spin_irqVector);
 
-    QVector<TriggerCondition> conditions;
+    struct TriggerConditionInfo
+    {
+        TriggerConditionInfo(const TriggerCondition &cond)
+            : condition(cond)
+            , displayName(TriggerConditionNames.value(cond))
+        {}
+
+        TriggerConditionInfo(const TriggerCondition &cond, const QString &name)
+            : condition(cond)
+            , displayName(name)
+        {}
+
+        TriggerCondition condition;
+        QString displayName;
+    };
+
+    QVector<TriggerConditionInfo> conditions;
 
     switch (m_vmeControllerType)
     {
@@ -225,6 +244,7 @@ EventConfigDialog::EventConfigDialog(
 
                 m_d->stack_options->addWidget(irqWidget);
                 m_d->stack_options->addWidget(timerWidget);
+
                 for (int i=(int)TriggerCondition::Input1RisingEdge;
                      i<=(int)TriggerCondition::Input2FallingEdge;
                      ++i)
@@ -236,23 +256,45 @@ EventConfigDialog::EventConfigDialog(
         case VMEControllerType::MVLC_USB:
         case VMEControllerType::MVLC_ETH:
             {
-                // Hide the IRQ Vector line. The vector is not used by the MVLC.
-                irqLayout->labelForField(m_d->spin_irqVector)->hide();
-                m_d->spin_irqVector->hide();
+                // IRQs
+                {
+                    // Hide the IRQ Vector line. The vector is not used by the MVLC.
+                    irqLayout->labelForField(m_d->spin_irqVector)->hide();
+                    m_d->spin_irqVector->hide();
 
-                irqLayout->addRow(QSL("Use Interrupt Acknowledge (IRQUseIACK)"),
-                                  m_d->cb_irqUseIACK);
-                m_d->cb_irqUseIACK->show();
+                    irqLayout->addRow(QSL("Use Interrupt Acknowledge (IRQUseIACK)"),
+                                    m_d->cb_irqUseIACK);
+                    m_d->cb_irqUseIACK->show();
 
-                auto label = new QLabel(
-                    QSL("Note: enabling the IRQUseIACK option will make IRQ handling"
-                        " slower but some VME modules might require it to work properly."));
+                    auto label = new QLabel(
+                        QSL("Note: enabling the IRQUseIACK option will make IRQ handling"
+                            " slower but some VME modules might require it to work properly."));
 
-                label->setWordWrap(true);
-                irqLayout->addRow(label);
-                m_d->stack_options->addWidget(irqWidget);
+                    label->setWordWrap(true);
+                    irqLayout->addRow(label);
+                    m_d->stack_options->addWidget(irqWidget);
+                }
 
-                // Timers
+                // Periodic via StackTimers (FW0037)
+                {
+                    m_d->spin_stackTimerPeriod = new QSpinBox;
+                    m_d->spin_stackTimerPeriod->setPrefix(QSL("Every "));
+                    m_d->spin_stackTimerPeriod->setSuffix(QSL(" ms"));
+                    m_d->spin_stackTimerPeriod->setMinimum(0);
+                    m_d->spin_stackTimerPeriod->setMaximum(0xffff);
+                    m_d->spin_stackTimerPeriod->setSingleStep(1.0);
+                    m_d->spin_stackTimerPeriod->setValue(1000);
+
+                    auto timerWidget = new QWidget;
+                    auto timerLayout = new QFormLayout(timerWidget);
+                    timerLayout->addRow(QSL("Period"), m_d->spin_stackTimerPeriod);
+                    auto label = new QLabel(QSL("MVLC StackTimers require MVLC firmware <b>FW0037</b> or later!"));
+                    label->setWordWrap(true);
+                    timerLayout->addRow(label);
+                    m_d->stack_options->addWidget(timerWidget);
+                }
+
+                // Periodic via MVLC Trigger I/O
                 {
                     m_d->combo_mvlcTimerBase = new QComboBox;
                     m_d->combo_mvlcTimerBase->addItem("ns", 0);
@@ -270,8 +312,8 @@ EventConfigDialog::EventConfigDialog(
                     {
                         m_d->spin_timerPeriod->setSuffix(QSL(" ") + unit);
                         m_d->spin_timerPeriod->setMinimum(
-                            unit == "ns" ? mvlc::stacks::TimerPeriodMin_ns : 1);
-                        m_d->spin_timerPeriod->setMaximum(mvlc::stacks::TimerPeriodMax);
+                            unit == "ns" ? mvme_mvlc::trigger_io::Timer::MinPeriod : 1);
+                        m_d->spin_timerPeriod->setMaximum(mvme_mvlc::trigger_io::Timer::MaxPeriod);
                     };
 
                     on_timer_base_changed("ns");
@@ -284,10 +326,11 @@ EventConfigDialog::EventConfigDialog(
                     timerLayout->addRow(QSL("Timer Base"), m_d->combo_mvlcTimerBase);
                     timerLayout->addRow(QSL("Period"), m_d->spin_timerPeriod);
                     m_d->stack_options->addWidget(timerWidget);
+                }
 
-                    // Trigger IO Condition
-
-                    label = new QLabel(QSL(
+                // Trigger IO Condition
+                {
+                    auto label = new QLabel(QSL(
                             "The event should be triggered via the MVLC Trigger I/O module.\n\n"
                             "Use the Trigger I/O Editor to setup one of the "
                             "StackStart units to trigger execution of this "
@@ -298,19 +341,35 @@ EventConfigDialog::EventConfigDialog(
                     m_d->stack_options->addWidget(label);
                 }
 
+                // On Master Trigger (FW0037)
+                {
+                    m_d->spin_mvlcSlaveTriggerIndex = new QSpinBox;
+                    m_d->spin_mvlcSlaveTriggerIndex->setMaximum(mvlc::stacks::SlaveTriggersCount - 1);
+
+                    auto optionsWidget = new QWidget;
+                    auto layout = new QFormLayout(optionsWidget);
+                    layout->addRow(QSL("Master Trigger Index"), m_d->spin_mvlcSlaveTriggerIndex);
+                    auto label = new QLabel(QSL("MVLC On Master Trigger requires MVLC firmware <b>FW0037</b> or later!"));
+                    label->setWordWrap(true);
+                    layout->addRow(label);
+                    m_d->stack_options->addWidget(optionsWidget);
+                }
+
+
                 conditions =
                 {
                     TriggerCondition::Interrupt,
-                    TriggerCondition::Periodic,
-                    TriggerCondition::TriggerIO
+                    { TriggerCondition::MvlcStackTimer, QSL("Periodic (via MVLC StackTimer)") },
+                    { TriggerCondition::Periodic,       QSL("Periodic (via MVLC Trigger I/O)") },
+                    TriggerCondition::TriggerIO,
+                    TriggerCondition::MvlcOnSlaveTrigger,
                 };
             } break;
     }
 
-    for (auto cond: conditions)
+    for (auto condInfo: conditions)
     {
-        m_d->combo_condition->addItem(TriggerConditionNames.value(cond, QSL("Unknown")),
-                                      static_cast<s32>(cond));
+        m_d->combo_condition->addItem(condInfo.displayName, static_cast<s32>(condInfo.condition));
     }
 
     loadFromConfig();
@@ -362,6 +421,12 @@ void EventConfigDialog::loadFromConfig()
 
                 m_d->spin_timerPeriod->setValue(
                     config->triggerOptions.value(QSL("mvlc.timer_period"), 1000u).toUInt());
+
+                m_d->spin_stackTimerPeriod->setValue(
+                    config->triggerOptions.value(QSL("mvlc.stacktimer_period"), 1000u).toUInt());
+
+                m_d->spin_mvlcSlaveTriggerIndex->setValue(
+                    config->triggerOptions.value(QSL("mvlc.slavetrigger_index"), 0u).toULongLong());
             } break;
     }
 }
@@ -392,8 +457,19 @@ void EventConfigDialog::saveToConfig()
         case VMEControllerType::MVLC_USB:
         case VMEControllerType::MVLC_ETH:
             config->triggerOptions["IRQUseIACK"] = m_d->cb_irqUseIACK->isChecked();
-            config->triggerOptions["mvlc.timer_base"] = m_d->combo_mvlcTimerBase->currentText();
-            config->triggerOptions["mvlc.timer_period"] = m_d->spin_timerPeriod->value();
+            if (config->triggerCondition == TriggerCondition::Periodic)
+            {
+                config->triggerOptions["mvlc.timer_base"] = m_d->combo_mvlcTimerBase->currentText();
+                config->triggerOptions["mvlc.timer_period"] = m_d->spin_timerPeriod->value();
+            }
+            else if (config->triggerCondition == TriggerCondition::MvlcStackTimer)
+            {
+                config->triggerOptions["mvlc.stacktimer_period"] = m_d->spin_stackTimerPeriod->value();
+            }
+            else if (config->triggerCondition == TriggerCondition::MvlcOnSlaveTrigger)
+            {
+                config->triggerOptions["mvlc.slavetrigger_index"] = m_d->spin_mvlcSlaveTriggerIndex->value();
+            }
             break;
     }
     config->setModified(true);
@@ -697,3 +773,96 @@ VHS4030pWidget::VHS4030pWidget(MVMEContext *context, ModuleConfig *config, QWidg
     });
 }
 #endif
+
+QString info_text(const VMEConfig *config)
+{
+    if (!is_mvlc_controller(config->getControllerType()))
+        return {};
+
+    auto settings = config->getControllerSettings();
+    QString ret;
+
+    if (config->getControllerType() == VMEControllerType::MVLC_ETH)
+    {
+        ret = QSL("eth://%1").arg(settings.value("mvlc_hostname").toString());
+    }
+    else if (settings.value("method").toString() == "by_index")
+    {
+        ret = QSL("usb://@%1").arg(settings.value("index").toString());
+    }
+    else if (settings.value("method").toString() == "by_serial")
+    {
+        ret = QSL("usb://%1").arg(settings.value("serial").toString());
+    }
+    else if (settings.value("method").toString() == "first")
+    {
+        ret = QSL("usb://");
+    }
+
+    ret = QSL("MVLC ") + ret;
+
+    return ret;
+}
+
+QString info_text(const EventConfig *config)
+{
+    QString infoText;
+
+    switch (config->triggerCondition)
+    {
+        case TriggerCondition::Interrupt:
+            {
+                infoText = QString("Trigger=IRQ%1")
+                    .arg(config->irqLevel);
+            } break;
+        case TriggerCondition::NIM1:
+            {
+                infoText = QSL("Trigger=NIM");
+            } break;
+        case TriggerCondition::Periodic:
+            {
+                infoText = QSL("Trigger=Periodic");
+                if (auto vmeConfig = config->getVMEConfig();
+                    vmeConfig && is_mvlc_controller(vmeConfig->getControllerType()))
+                {
+                    auto tp = config->getMVLCTimerPeriod();
+                    infoText += QSL(", every %1%2").arg(tp.first).arg(tp.second);
+                }
+            } break;
+        case TriggerCondition::MvlcStackTimer:
+            {
+                infoText = QSL("Trigger=%1, every %2 ms")
+                    .arg(TriggerConditionNames.value(config->triggerCondition))
+                    .arg(config->triggerOptions["mvlc.stacktimer_period"].toULongLong());
+                    ;
+            } break;
+        case TriggerCondition::MvlcOnSlaveTrigger:
+            {
+                infoText = QSL("Trigger=%1, TriggerIndex=%2")
+                    .arg(TriggerConditionNames.value(config->triggerCondition))
+                    .arg(config->triggerOptions["mvlc.slavetrigger_index"].toULongLong());
+                break;
+            }
+        default:
+            {
+                infoText = QString("Trigger=%1")
+                    .arg(TriggerConditionNames.value(config->triggerCondition));
+            } break;
+    }
+
+    auto vars = config->getVariables();
+
+    if (auto mcst = vars.value("mesy_mcst").value; !mcst.isEmpty())
+        infoText += QSL(", mcst=%1").arg(mcst);
+
+    return infoText;
+}
+
+QString info_text(const ModuleConfig *config)
+{
+    QString infoText = QString("Type=%1, Address=0x%2")
+        .arg(config->getModuleMeta().displayName)
+        .arg(config->getBaseAddress(), 8, 16, QChar('0'));
+
+    return infoText;
+}

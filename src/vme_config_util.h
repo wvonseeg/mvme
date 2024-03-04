@@ -27,10 +27,9 @@
 
 #include "libmvme_export.h"
 #include "vme_config.h"
+#include "multi_crate.h"
 
-namespace mvme
-{
-namespace vme_config
+namespace mesytec::mvme::vme_config
 {
 
 // Creates a symbol table containing the standard vme event variables:
@@ -84,6 +83,9 @@ QJsonDocument LIBMVME_EXPORT serialize_vme_config_to_json_document(const VMEConf
 // Returns false on error. Use out.errorString() to retrieve error information.
 bool LIBMVME_EXPORT serialize_vme_config_to_device(QIODevice &out, const VMEConfig &config);
 
+QJsonDocument LIBMVME_EXPORT serialize_multicrate_config_to_json_document(const multi_crate::MulticrateVMEConfig &config);
+bool LIBMVME_EXPORT serialize_multicrate_config_to_device(QIODevice &out, const multi_crate::MulticrateVMEConfig &config);
+
 std::unique_ptr<ModuleConfig> LIBMVME_EXPORT moduleconfig_from_modulejson(const QJsonObject &json);
 void LIBMVME_EXPORT load_moduleconfig_from_modulejson(ModuleConfig &dest, const QJsonObject &json);
 
@@ -94,12 +96,11 @@ std::unique_ptr<EventConfig> LIBMVME_EXPORT eventconfig_from_file(const QString 
 bool LIBMVME_EXPORT gui_save_vme_script_config_to_file(const VMEScriptConfig *script, QWidget *dialogParent = nullptr);
 bool LIBMVME_EXPORT gui_save_vme_script_to_file(const QString &scriptText, const QString &proposedFilename = {}, QWidget *dialogParent = nullptr);
 
-template<typename ObjectType>
-std::unique_ptr<ObjectType> configobject_from_json(const QJsonObject &json, const char *jsonRoot)
+template<typename ObjectType, typename StringType>
+std::unique_ptr<ObjectType> configobject_from_json(const QJsonObject &json, const StringType &jsonRoot)
 {
     auto result = std::make_unique<ObjectType>();
     result->read(json[jsonRoot].toObject());
-    generate_new_object_ids(result.get());
     return result;
 }
 
@@ -107,6 +108,9 @@ std::unique_ptr<ObjectType> configobject_from_json(const QJsonObject &json, cons
 // settings compatible with VMEConfig::setVMEController(). Logic is similar to
 // the mvlc_factory code.
 std::pair<VMEControllerType, QVariantMap> LIBMVME_EXPORT mvlc_settings_from_url(const std::string &mvlcUrl);
+
+std::unique_ptr<ConfigObject> deserialize_object(const QJsonObject &json);
+QJsonDocument serialize_object(const ConfigObject *obj);
 
 template<typename ConfigObjectType>
 std::unique_ptr<ConfigObjectType> clone_config_object(const ConfigObjectType &source)
@@ -119,8 +123,35 @@ std::unique_ptr<ConfigObjectType> clone_config_object(const ConfigObjectType &so
     return result;
 }
 
+void move_module(ModuleConfig *module, EventConfig *destEvent, int destIndex);
+void copy_module(ModuleConfig *module, EventConfig *destEvent, int destIndex);
 
-} // end namespace vme_config
-} // end namespace mvme
+inline void store_configobject_expanded_state(const QUuid &objectId, bool isExpanded)
+{
+    QSettings settings("vme_tree_ui_state.ini", QSettings::IniFormat);
+    auto expandedObjects = settings.value("ExpandedObjects").toMap();
+
+    if (isExpanded)
+    {
+        qDebug() << "ConfigObject expanded, id =" << objectId;
+        expandedObjects.insert(objectId.toString(), true);
+    }
+    else
+    {
+        qDebug() << "ConfigObject collapsed, id =" << objectId;
+        expandedObjects.remove(objectId.toString());
+    }
+
+    settings.setValue("ExpandedObjects", expandedObjects);
+}
+
+inline bool was_configobject_expanded(const QUuid &objectId)
+{
+    QSettings settings("vme_tree_ui_state.ini", QSettings::IniFormat);
+    auto expandedObjects = settings.value("ExpandedObjects").toMap();
+    return expandedObjects.value(objectId.toString(), false).toBool();
+}
+
+}
 
 #endif /* __MVME_VME_CONFIG_UTIL_H__ */

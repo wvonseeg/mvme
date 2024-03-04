@@ -11,14 +11,14 @@
 #include <cassert>
 #include <stdexcept>
 #include <mesytec-mvlc/mesytec-mvlc.h>
+#include <mesytec-mvlc/util/protected.h>
 
 #include "libmvme_export.h"
-#include "vme_config.h"
 #include "mvlc/mvlc_vme_controller.h"
+#include "util/mesy_nng.h"
+#include "vme_config.h"
 
-namespace mesytec
-{
-namespace multi_crate
+namespace mesytec::mvme::multi_crate
 {
 
 // Holds bi-directional mappings between ConfigObjects in crate and merged vme
@@ -378,7 +378,7 @@ struct CrateReadout
     //CrateReadout(const CrateReadout &) = delete;
 };
 
-struct MultiCrateReadout
+struct MultiCrateReadout_first
 {
 
     std::vector<std::unique_ptr<CrateReadout>> crateReadouts;
@@ -392,9 +392,103 @@ struct MultiCrateReadout
     //std::unique_ptr<mvlc::ReadoutBufferQueues> postProcessedListfileQueues;
 };
 
-} // end namespace multi_crate
-} // end namespace mesytec
+struct MulticrateTemplates
+{
+    std::unique_ptr<EventConfig> mainStartEvent;
+    std::unique_ptr<EventConfig> secondaryStartEvent;
+    std::unique_ptr<EventConfig> stopEvent;
+    std::unique_ptr<EventConfig> dataEvent;
+    QString setMasterModeScript;
+    QString setSlaveModeScript;
+    QString triggerIoScript;
+};
 
-Q_DECLARE_METATYPE(mesytec::multi_crate::MulticrateVMEConfig *);
+MulticrateTemplates read_multicrate_templates();
+std::unique_ptr<MulticrateVMEConfig> make_multicrate_config(size_t numCrates = 2);
+
+// A WriteHandle implementation writing to a nng_msg structure.
+struct NngMsgWriteHandle: public mvlc::listfile::WriteHandle
+{
+    NngMsgWriteHandle()
+        : msg_(nullptr)
+        { }
+
+    explicit NngMsgWriteHandle(nng_msg *msg)
+        : msg_(msg)
+        { }
+
+    void setMessage(nng_msg *msg)
+    {
+        msg_= msg;
+    }
+
+    size_t write(const u8 *data, size_t size) override
+    {
+        assert(msg_);
+        if (auto res = nng_msg_append(msg_, data, size))
+            throw std::runtime_error(fmt::format("NngMsgWriteHandle: {}", nng_strerror(res)));
+        return size;
+    }
+
+    nng_msg *msg_;
+};
+
+// Readout context for a single crate. Output buffers are written to the output socket.
+struct ReadoutProducerContext
+{
+    unsigned crateId = 0;
+    mvlc::MVLC mvlc;
+    nng_socket outputSocket = NNG_SOCKET_INITIALIZER;
+    nng_msg *outputMessage = nullptr;
+    NngMsgWriteHandle msgWriteHandle;
+
+    // TODO: add readout counters here (mvlc_readout_worker)
+};
+
+struct ReplayProducerContext
+{
+    nng_socket outputSocket;
+};
+
+struct ReadoutConsumerContext
+{
+    nng_socket inputSocket;
+    nng_socket snoopOutputSocket;
+    mvlc::listfile::WriteHandle *listfileWriteHandle;
+    // TODO: add consumer counters here
+};
+
+void mvlc_readout_loop(ReadoutProducerContext &context, std::atomic<bool> &quit); // throws on error
+void mvlc_readout_consumer(ReadoutConsumerContext &context, std::atomic<bool> &quit);
+
+enum class MessageType: u8
+{
+    ListfileBuffer,
+    ParsedEvents,
+};
+
+#define PACK_AND_ALIGN4 __attribute__((packed, aligned(4)))
+
+struct PACK_AND_ALIGN4 BaseMessageHeader
+{
+    MessageType messageType;
+    u32 messageNumber; // starts from 1
+};
+
+struct PACK_AND_ALIGN4 ListfileBufferMessageHeader: public BaseMessageHeader
+{
+    u32 bufferType;
+};
+
+static_assert(sizeof(ListfileBufferMessageHeader) % sizeof(u32) == 0);
+
+#undef PACK_AND_ALIGN4
+
+// Move trailing bytes from msg to tmpBuf. Returns the number of bytes moved.
+size_t fixup_listfile_buffer_message(const mvlc::ConnectionType &bufferType, nng_msg *msg, std::vector<u8> &tmpBuf);
+
+}
+
+Q_DECLARE_METATYPE(mesytec::mvme::multi_crate::MulticrateVMEConfig *);
 
 #endif /* __MVME_MULTI_CRATE_H__ */
