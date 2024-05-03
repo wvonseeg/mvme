@@ -52,6 +52,12 @@ struct PreparsedLine
     QSet<QString> varRefs;      // The names of the variables referenced by this line.
 };
 
+inline bool operator==(const PreparsedLine &lhs, const PreparsedLine &rhs)
+{
+    return std::tie(lhs.line, lhs.parts, lhs.lineNumber, lhs.varRefs)
+        == std::tie(rhs.line, rhs.parts, rhs.lineNumber, rhs.varRefs);
+}
+
 static const QString MetaBlockBegin = "meta_block_begin";
 static const QString MetaBlockEnd = "meta_block_end";
 
@@ -85,6 +91,12 @@ struct MetaBlock
         return blockBegin.parts.value(1);
     }
 };
+
+inline bool operator==(const MetaBlock &lhs, const MetaBlock &rhs)
+{
+    return std::tie(lhs.blockBegin, lhs.preparsedLines, lhs.textContents)
+        == std::tie(rhs.blockBegin, rhs.preparsedLines, rhs.textContents);
+}
 
 enum class CommandType
 {
@@ -216,24 +228,19 @@ struct Command
     u32 accuMask = 0;
     u32 accuRotate = 0;
     QString stringData;
-
-    #if 0
-    struct AccuTest
-    {
-        AccuTestOp accuTestOp = {};
-        u32 accuTestValue = 0;
-        QString accuTestMessage;
-    };
-
-    struct AccuMaskAndRotate
-    {
-        u32 accuMask = 0;
-        u32 accuRotate = 0;
-    };
-
-    std::variant<AccuTest, AccuMaskAndRotate> accu;
-    #endif
 };
+
+inline bool operator==(const Command &lhs, const Command &rhs)
+{
+    return std::tie(lhs.type, lhs.addressMode, lhs.dataWidth, lhs.address, lhs.value, lhs.transfers, lhs.delay_ms, lhs.countMask, lhs.blk2eSSTRate, lhs.warning, lhs.lineNumber, lhs.source, lhs.metaBlock, lhs.printArgs, lhs.mvlcCustomStack, lhs.mvlcInlineStack, lhs.mvlcSlowRead, lhs.mvlcFifoMode, lhs.accuTestOp, lhs.accuTestMessage, lhs.accuMask, lhs.accuRotate, lhs.stringData)
+        == std::tie(rhs.type, rhs.addressMode, rhs.dataWidth, rhs.address, rhs.value, rhs.transfers, rhs.delay_ms, rhs.countMask, rhs.blk2eSSTRate, rhs.warning, rhs.lineNumber, rhs.source, rhs.metaBlock, rhs.printArgs, rhs.mvlcCustomStack, rhs.mvlcInlineStack, rhs.mvlcSlowRead, rhs.mvlcFifoMode, rhs.accuTestOp, rhs.accuTestMessage, rhs.accuMask, rhs.accuRotate, rhs.stringData);
+}
+
+inline bool operator!=(const Command &lhs, const Command &rhs)
+{
+    return !(lhs == rhs);
+}
+
 
 inline bool is_valid(const Command &cmd)
 {
@@ -242,9 +249,9 @@ inline bool is_valid(const Command &cmd)
 
 LIBMVME_EXPORT QString to_string(CommandType commandType);
 LIBMVME_EXPORT CommandType commandType_from_string(const QString &str);
-LIBMVME_EXPORT QString amod_to_string(u8 addressMode);
+LIBMVME_EXPORT QString amod_to_string(u8 addressMode, bool pretty = false);
 LIBMVME_EXPORT QString to_qstring(DataWidth dataWidth);
-LIBMVME_EXPORT QString to_string(const Command &cmd);
+LIBMVME_EXPORT QString to_string(const Command &cmd, bool pretty = false);
 LIBMVME_EXPORT QString format_hex(uint32_t value);
 
 inline QString to_string(AccuTestOp testop)

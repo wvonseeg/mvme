@@ -45,6 +45,41 @@ using namespace vme_script::run_script_options;
 static const unsigned Win32TimePeriod = 1;
 #endif
 
+VmeScriptConfigVector
+vme_daq_collect_module_init_scripts(const ModuleConfig *moduleConfig)
+{
+    QVector<VMEScriptConfig *> scripts;
+    scripts.push_back(moduleConfig->getResetScript());
+    scripts.append(moduleConfig->getInitScripts());
+    return scripts;
+}
+
+QVector<std::pair<ModuleConfig *, VmeScriptConfigVector>>
+vme_daq_collect_module_init_scripts(const EventConfig *eventConfig)
+{
+    QVector<std::pair<ModuleConfig *, VmeScriptConfigVector>> result;
+
+    for (auto moduleConfig: eventConfig->getModuleConfigs())
+    {
+        result.append(std::make_pair(moduleConfig, vme_daq_collect_module_init_scripts(moduleConfig)));
+    }
+
+    return result;
+}
+
+QVector<std::pair<EventConfig *, QVector<std::pair<ModuleConfig *, VmeScriptConfigVector>>>>
+vme_daq_collect_module_init_scripts(const VMEConfig *vmeConfig)
+{
+    QVector<std::pair<EventConfig *, QVector<std::pair<ModuleConfig *, VmeScriptConfigVector>>>> result;
+
+    for (auto eventConfig: vmeConfig->getEventConfigs())
+    {
+        result.append(std::make_pair(eventConfig, vme_daq_collect_module_init_scripts(eventConfig)));
+    }
+
+    return result;
+}
+
 QVector<ScriptWithResults>
 vme_daq_run_global_daq_start_scripts(
     const VMEConfig *config,
@@ -97,7 +132,7 @@ vme_daq_run_global_daq_start_scripts(
 
 QVector<ScriptWithResults>
 vme_daq_run_global_daq_stop_scripts(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -146,7 +181,7 @@ vme_daq_run_global_daq_stop_scripts(
 
 QVector<ScriptWithResults>
 vme_daq_run_init_modules(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -156,29 +191,28 @@ vme_daq_run_init_modules(
 
     logger(QSL(""));
     logger(QSL("Initializing Modules:"));
-    for (auto eventConfig: config->getEventConfigs())
+
+    auto allScripts = vme_daq_collect_module_init_scripts(config);
+
+    for (const auto & [eventConfig, eventScripts]: allScripts)
     {
-        for (auto module: eventConfig->getModuleConfigs())
+        for (const auto & [moduleConfig, moduleScripts]: eventScripts)
         {
-            if (!module->isEnabled())
+            if (!moduleConfig->isEnabled())
             {
                 logger(QString("  %1.%2: Disabled in VME configuration")
                            .arg(eventConfig->objectName())
-                           .arg(module->objectName())
+                           .arg(moduleConfig->objectName())
                           );
                 continue;
             }
 
             logger(QString("  %1.%2")
                        .arg(eventConfig->objectName())
-                       .arg(module->objectName())
+                       .arg(moduleConfig->objectName())
                       );
 
-            QVector<VMEScriptConfig *> scripts;
-            scripts.push_back(module->getResetScript());
-            scripts.append(module->getInitScripts());
-
-            for (auto scriptConfig: scripts)
+            for (auto scriptConfig: moduleScripts)
             {
                 logger(QSL("    %1").arg(scriptConfig->objectName()));
                 auto indentingLogger = [logger](const QString &str) { logger(QSL("      ") + str); };
@@ -186,7 +220,7 @@ vme_daq_run_init_modules(
 
                 try
                 {
-                    auto script = parse(scriptConfig, module->getBaseAddress());
+                    auto script = parse(scriptConfig, moduleConfig->getBaseAddress());
                     auto results = run_script(
                         controller, script,
                         indentingLogger, indentingErrorLogger, opts | LogEachResult);
@@ -212,7 +246,7 @@ vme_daq_run_init_modules(
 
 QVector<ScriptWithResults>
 vme_daq_run_event_daq_start_scripts(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -253,7 +287,7 @@ vme_daq_run_event_daq_start_scripts(
 
 QVector<ScriptWithResults>
 vme_daq_run_event_daq_stop_scripts(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -298,7 +332,7 @@ vme_daq_run_event_daq_stop_scripts(
 //
 QVector<ScriptWithResults>
 vme_daq_init(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     vme_script::run_script_options::Flag opts
@@ -314,7 +348,7 @@ vme_daq_init(
 
 QVector<ScriptWithResults>
 vme_daq_init(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -349,7 +383,7 @@ vme_daq_init(
 //
 QVector<ScriptWithResults>
 vme_daq_shutdown(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     vme_script::run_script_options::Flag opts
@@ -360,7 +394,7 @@ vme_daq_shutdown(
 
 QVector<ScriptWithResults>
 vme_daq_shutdown(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,
@@ -388,7 +422,7 @@ vme_daq_shutdown(
 //
 QVector<ScriptWithResults>
 mvlc_daq_shutdown(
-    VMEConfig *config,
+    const VMEConfig *config,
     VMEController *controller,
     std::function<void (const QString &)> logger,
     std::function<void (const QString &)> errorLogger,

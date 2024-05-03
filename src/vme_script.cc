@@ -317,40 +317,63 @@ Command parseBlockTransfer(const QStringList &args, int lineNumber)
     Command result;
     result.type = commandType_from_string(args[0]);
 
-    try
+    // Parse both literal and numeric address modes, then translate them to the
+    // correct amode values for the transfer type. E.g. for a "blt" command the
+    // address_mode "a24" is first parsed to 0x09, then translated to 0x3b.
+    auto amod = parseAddressMode(args[1], true);
+
+    switch (result.type)
     {
-        // Parse non-numeric address modes only and translate them to the
-        // correct address mode for the transfer type.
-        auto amod = parseAddressMode(args[1], false);
-
-        switch (result.type)
+    case CommandType::BLT:
+    case CommandType::BLTFifo:
+        if (amod == vme_amods::A24)
         {
-        case CommandType::BLT:
-        case CommandType::BLTFifo:
-            if (amod == vme_amods::A24)
-                amod = vme_amods::a24UserBlock;
-            else if (amod == vme_amods::A32)
-                amod = vme_amods::a32UserBlock;
-            break;
+            amod = vme_amods::a24UserBlock;
+        }
+        else if (amod == vme_amods::A32)
+        {
+            amod = vme_amods::a32UserBlock;
+        }
+        else if (amod != vme_amods::a24PrivBlock && amod != vme_amods::a32PrivBlock)
+        {
+            throw ParseError(
+                "Invalid address modifier for BLT transfer (only A24/A32 modes allowed)",
+                lineNumber);
+        }
+        break;
 
+    case CommandType::MBLT:
+    case CommandType::MBLTFifo:
+    case CommandType::MBLTSwapped:
+    case CommandType::MBLTSwappedFifo:
+        if (amod == vme_amods::A32)
+        {
+            amod = vme_amods::a32UserBlock64;
+        }
+        else if (amod != vme_amods::a32PrivBlock64)
+        {
+            throw ParseError(
+                "Invalid address modifier for MBLT transfer (only A32 allowed)",
+                lineNumber);
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    result.addressMode = amod;
+
+    switch (result.type)
+    {
+        case CommandType::BLT:
         case CommandType::MBLT:
-        case CommandType::MBLTFifo:
         case CommandType::MBLTSwapped:
-        case CommandType::MBLTSwappedFifo:
-            if (amod == vme_amods::A32)
-                amod = vme_amods::a32UserBlock64;
+            result.mvlcFifoMode = false;
             break;
 
         default:
             break;
-        }
-
-        result.addressMode = amod;
-    }
-    catch(const char *)
-    {
-        // Try parsing again but this time accepting raw numeric values too.
-        result.addressMode = parseAddressMode(args[1], true);
     }
 
     result.address = parseAddress(args[2]);
@@ -388,6 +411,17 @@ Command parse2esstTransfer(const QStringList &args, int lineNumber)
     result.blk2eSSTRate = parse2esstRate(args[2]);
     result.transfers = parseValue<u32>(args[3]);
     result.lineNumber = lineNumber;
+
+    switch (result.type)
+    {
+        case CommandType::Blk2eSST64:
+        case CommandType::Blk2eSST64Swapped:
+            result.mvlcFifoMode = false;
+            break;
+
+        default:
+            break;
+    }
 
     return result;
 }
@@ -1439,6 +1473,32 @@ static Command handle_meta_block_command(
     return result;
 }
 
+// TODO: test and use this function in handle_mvlc_custom_command() and
+#if 0
+// Parses keyword arguments used by block read commands, e.g.
+// "mvlc_custom_begin output_words=7" returns {{"output_words", "7"}}
+// "mvlc_stack_begin suppress_output" return {{"suppress_output", ""}}
+static std::vector<std::pair<QString, QString>> parse_keyword_arguments(const PreparsedLine &cmdLine)
+{
+    std::vector<std::pair<QString, QString>> result;
+
+    for (auto it = cmdLine.parts.begin() + 1; it != cmdLine.parts.end(); it++)
+    {
+        if (it->contains('='))
+        {
+            QStringList argParts = (*it).split('=', QString::SkipEmptyParts);
+            result.emplace_back(std::make_pair(argParts.value(0, {}), argParts.value(1, {})));
+        }
+        else
+        {
+            result.emplace_back(std::make_pair(*it, QString{}));
+        }
+    }
+
+    return result;
+}
+#endif
+
 static Command handle_mvlc_custom_command(
     const QVector<PreparsedLine> &lines,
     int blockStartIndex, int blockEndIndex)
@@ -1501,6 +1561,25 @@ static Command handle_mvlc_inline_stack(
 
     Command result;
     result.type = CommandType::MVLC_InlineStack;
+
+// TODO: figure out where to store the flag or maybe even move handling of
+// the flag to the output function (format_result() in vme_script_exec.cc)
+#if 0
+    // parse first line arguments
+    PreparsedLine cmdLine = lines.at(blockStartIndex);
+
+    assert(cmdLine.parts.at(0) == MVLC_CustomBegin);
+
+    auto keywordArgs = parse_keyword_arguments(cmdLine);
+
+    for (const auto &kv: keywordArgs)
+    {
+        if (kv.first == "suppress_output")
+            result.transfers = parse
+        else
+            throw QString("unknown argument to '%1': %2").arg(MVLC_CustomBegin).arg(kv.first);
+    }
+#endif
 
     QStringList plainLineBuffer;
 
@@ -1939,7 +2018,7 @@ CommandType commandType_from_string(const QString &str)
     return stringToCommandType.value(str.toLower(), CommandType::Invalid);
 }
 
-QString amod_to_string(u8 addressMode)
+QString amod_to_string(u8 addressMode, bool pretty)
 {
     static const QMap<u8, QString> addressModeToString =
     {
@@ -1968,9 +2047,14 @@ QString amod_to_string(u8 addressMode)
     };
 
     auto result = addressModeToString.value(addressMode);
-    if (!result.isEmpty())
-        result += " ";
-    result += QSL("(amod=0x%1)").arg(static_cast<u32>(addressMode), 2, 16, QLatin1Char('0'));
+    if (pretty)
+    {
+        // When pretty printing the resulting string is not parseable as a vme
+        // script command.
+        if (!result.isEmpty())
+            result += " ";
+        result += QSL("(amod=0x%1)").arg(static_cast<u32>(addressMode), 2, 16, QLatin1Char('0'));
+    }
     return result;
 }
 
@@ -2011,7 +2095,7 @@ QString to_string(const Blk2eSSTRate &rate)
     return "Unknown 2eSST transfer rate";
 }
 
-QString to_string(const Command &cmd)
+QString to_string(const Command &cmd, bool pretty)
 {
     QString buffer;
     QString cmdStr = to_string(cmd.type);
@@ -2028,7 +2112,7 @@ QString to_string(const Command &cmd)
             {
                 buffer = QString(QSL("%1 %2 %3 %4"))
                     .arg(cmdStr)
-                    .arg(amod_to_string(cmd.addressMode))
+                    .arg(amod_to_string(cmd.addressMode, pretty))
                     .arg(to_qstring(cmd.dataWidth))
                     .arg(format_hex(cmd.address));
                 if (cmd.mvlcSlowRead)
@@ -2042,7 +2126,7 @@ QString to_string(const Command &cmd)
             {
                 buffer = QString(QSL("%1 %2 %3 %4 %5"))
                     .arg(cmdStr)
-                    .arg(amod_to_string(cmd.addressMode))
+                    .arg(amod_to_string(cmd.addressMode, pretty))
                     .arg(to_qstring(cmd.dataWidth))
                     .arg(format_hex(cmd.address))
                     .arg(format_hex(cmd.value));
@@ -2069,7 +2153,7 @@ QString to_string(const Command &cmd)
             {
                 buffer = QString(QSL("%1 %2 %3 %4"))
                     .arg(cmdStr)
-                    .arg(amod_to_string(cmd.addressMode))
+                    .arg(amod_to_string(cmd.addressMode, pretty))
                     .arg(format_hex(cmd.address))
                     .arg(cmd.transfers);
             } break;

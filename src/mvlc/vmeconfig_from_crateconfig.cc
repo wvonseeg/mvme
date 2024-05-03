@@ -15,32 +15,33 @@ namespace mvme
 // Converts a mvlc::StackCommand to a vme_script::Command. If the conversion
 // cannot be performed, e.g. for StackStart or StackEnd, an invalid
 // vme_script::Command is returned.
-vme_script::Command stack_command_to_vmescript_command(const mvlc::StackCommand &srcCmd)
+vme_script::Command mvlc_command_to_vme_script_command(const mvlc::StackCommand &srcCmd)
 {
     using namespace vme_script;
     using mvlcCT = mesytec::mvlc::StackCommand::CommandType;
 
     Command dstCmd;
+    dstCmd.type = CommandType::Invalid;
 
     switch (srcCmd.type)
     {
+        // FIFO block reads and single word reads
         case mvlcCT::VMERead:
             if (mvlc::vme_amods::is_blt_mode(srcCmd.amod))
             {
                 dstCmd.type = CommandType::BLTFifo;
                 dstCmd.transfers = srcCmd.transfers;
-                dstCmd.addressMode = vme_address_modes::BLT32;
             }
             else if (mvlc::vme_amods::is_mblt_mode(srcCmd.amod))
             {
                 dstCmd.type = CommandType::MBLTFifo;
                 dstCmd.transfers = srcCmd.transfers;
-                dstCmd.addressMode = vme_address_modes::MBLT64;
             }
             else if (mvlc::vme_amods::is_esst64_mode(srcCmd.amod))
             {
-//#warning "Implement eSST64 in VMEScript" (it's not even implemented in the MVLC yet)
-                break;
+                dstCmd.type = CommandType::Blk2eSST64Fifo;
+                dstCmd.transfers = srcCmd.transfers;
+                dstCmd.blk2eSSTRate = srcCmd.rate;
             }
             else // non-block reads
             {
@@ -48,10 +49,84 @@ vme_script::Command stack_command_to_vmescript_command(const mvlc::StackCommand 
                 dstCmd.dataWidth = (srcCmd.dataWidth == mesytec::mvlc::VMEDataWidth::D16
                                     ? DataWidth::D16
                                     : DataWidth::D32);
-                dstCmd.addressMode = srcCmd.amod;
             }
 
             dstCmd.address = srcCmd.address;
+            dstCmd.addressMode = srcCmd.amod;
+            dstCmd.mvlcSlowRead = srcCmd.lateRead;
+            dstCmd.mvlcFifoMode = true;
+            break;
+
+        // FIFO word swapped for MBLT and 2eSST
+        case mvlcCT::VMEReadSwapped:
+            if (mvlc::vme_amods::is_mblt_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::MBLTSwappedFifo;
+                dstCmd.transfers = srcCmd.transfers;
+            }
+            else if (mvlc::vme_amods::is_esst64_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::Blk2eSST64SwappedFifo;
+                dstCmd.transfers = srcCmd.transfers;
+                dstCmd.blk2eSSTRate = srcCmd.rate;
+            }
+
+            dstCmd.address = srcCmd.address;
+            dstCmd.addressMode = srcCmd.amod;
+            dstCmd.mvlcSlowRead = srcCmd.lateRead;
+            dstCmd.mvlcFifoMode = true;
+            break;
+
+        // memory reads (with address increment) and single word reads
+        case mvlcCT::VMEReadMem:
+            if (mvlc::vme_amods::is_blt_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::BLT;
+                dstCmd.transfers = srcCmd.transfers;
+            }
+            else if (mvlc::vme_amods::is_mblt_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::MBLT;
+                dstCmd.transfers = srcCmd.transfers;
+            }
+            else if (mvlc::vme_amods::is_esst64_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::Blk2eSST64;
+                dstCmd.transfers = srcCmd.transfers;
+                dstCmd.blk2eSSTRate = srcCmd.rate;
+            }
+            else // non-block reads
+            {
+                dstCmd.type = CommandType::Read;
+                dstCmd.dataWidth = (srcCmd.dataWidth == mesytec::mvlc::VMEDataWidth::D16
+                                    ? DataWidth::D16
+                                    : DataWidth::D32);
+            }
+
+            dstCmd.address = srcCmd.address;
+            dstCmd.addressMode = srcCmd.amod;
+            dstCmd.mvlcSlowRead = srcCmd.lateRead;
+            dstCmd.mvlcFifoMode = false;
+            break;
+
+        // word swapped memory reads for MBLT and 2eSST
+        case mvlcCT::VMEReadMemSwapped:
+            if (mvlc::vme_amods::is_mblt_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::MBLTSwapped;
+                dstCmd.transfers = srcCmd.transfers;
+            }
+            else if (mvlc::vme_amods::is_esst64_mode(srcCmd.amod))
+            {
+                dstCmd.type = CommandType::Blk2eSST64Swapped;
+                dstCmd.transfers = srcCmd.transfers;
+                dstCmd.blk2eSSTRate = srcCmd.rate;
+            }
+
+            dstCmd.address = srcCmd.address;
+            dstCmd.addressMode = srcCmd.amod;
+            dstCmd.mvlcSlowRead = srcCmd.lateRead;
+            dstCmd.mvlcFifoMode = false;
             break;
 
         case mvlcCT::VMEWrite:
@@ -74,12 +149,56 @@ vme_script::Command stack_command_to_vmescript_command(const mvlc::StackCommand 
             dstCmd.value = srcCmd.value;
             break;
 
+        case mvlcCT::Wait:
+            dstCmd.type = CommandType::MVLC_Wait;
+            dstCmd.value = srcCmd.value;
+            break;
+
+        case mvlcCT::SignalAccu:
+            dstCmd.type = CommandType::MVLC_SignalAccu;
+            break;
+
+        case mvlcCT::MaskShiftAccu:
+            dstCmd.type = CommandType::MVLC_MaskShiftAccu;
+            dstCmd.address = srcCmd.address; // mask
+            dstCmd.value = srcCmd.value; // shift
+            break;
+
+        case mvlcCT::SetAccu:
+            dstCmd.type = CommandType::MVLC_SetAccu;
+            dstCmd.value = srcCmd.value;
+            break;
+
+        case mvlcCT::ReadToAccu:
+            dstCmd.type = CommandType::MVLC_ReadToAccu;
+            dstCmd.address = srcCmd.address;
+            dstCmd.addressMode = srcCmd.amod;
+            dstCmd.dataWidth = (srcCmd.dataWidth == mesytec::mvlc::VMEDataWidth::D16
+                                ? DataWidth::D16
+                                : DataWidth::D32);
+            dstCmd.mvlcSlowRead = srcCmd.lateRead;
+            break;
+
+        case mvlcCT::CompareLoopAccu:
+            dstCmd.type = CommandType::MVLC_CompareLoopAccu;
+            dstCmd.value = srcCmd.value; // AccuComparator
+            dstCmd.address = srcCmd.address; // compare value
+            break;
+
         case mvlcCT::SoftwareDelay:
             dstCmd.type = CommandType::Wait;
             dstCmd.delay_ms = srcCmd.value;
             break;
 
-        default:
+        case mvlcCT::Custom:
+            dstCmd.type = CommandType::MVLC_Custom;
+            dstCmd.transfers = srcCmd.transfers;
+            dstCmd.mvlcCustomStack = srcCmd.customValues;
+            break;
+
+        case mvlcCT::StackStart:
+        case mvlcCT::StackEnd:
+        case mvlcCT::Invalid:
             break;
     }
 
@@ -92,7 +211,7 @@ vme_script::VMEScript command_group_to_vmescript(const mvlc::StackCommandBuilder
 
     for (const auto &cmd: group.commands)
     {
-        auto vmeScriptCmd = stack_command_to_vmescript_command(cmd);
+        auto vmeScriptCmd = mvlc_command_to_vme_script_command(cmd);
 
         if (is_valid(vmeScriptCmd))
             result.push_back(vmeScriptCmd);
@@ -246,27 +365,55 @@ std::unique_ptr<VMEConfig> vmeconfig_from_crateconfig(
         try
         {
             const auto &readoutStack = crateConfig.stacks.at(stackIndex);
-            auto triggerInfo = mvlc::decode_trigger_value(crateConfig.triggers.at(stackIndex));
 
             auto eventConfig = std::make_unique<EventConfig>();
             eventConfig->setObjectName(QString::fromStdString(readoutStack.getName()));
 
-            if (triggerInfo.first == mvlc::stacks::TriggerType::IRQWithIACK
-                || triggerInfo.first == mvlc::stacks::TriggerType::IRQNoIACK)
+            mvlc::stacks::Trigger trigger { .value = static_cast<u16>(crateConfig.triggers.at(stackIndex)) };
+
+            if (trigger.type == mvlc::stacks::TriggerType::IRQWithIACK
+                || trigger.type == mvlc::stacks::TriggerType::IRQNoIACK)
             {
-                eventConfig->triggerCondition = TriggerCondition::Interrupt;
-                eventConfig->triggerOptions[QSL("IRQUseIACK")] =
-                    (triggerInfo.first == mvlc::stacks::TriggerType::IRQWithIACK);
-                eventConfig->irqLevel = triggerInfo.second;
+                if (trigger.subtype <= mvlc::stacks::TriggerSubtype::IRQ16)
+                {
+                    eventConfig->triggerCondition = TriggerCondition::Interrupt;
+                    eventConfig->triggerOptions[QSL("IRQUseIACK")] = (trigger.type == mvlc::stacks::TriggerType::IRQWithIACK);
+                    // IRQ1 is stored as 0 in stacks:Trigger::TriggerSubtype but as 1 in EventConfig::irqLevel.
+                    eventConfig->irqLevel = trigger.subtype + 1;
+                }
+                else if (trigger.subtype <= mvlc::stacks::TriggerSubtype::Slave3)
+                {
+                    eventConfig->triggerCondition = TriggerCondition::MvlcOnSlaveTrigger;
+                    // Similar to EventConfigDialog::saveToConfig() but the Slave trigger index has to be calculated.
+                    eventConfig->triggerOptions[QSL("mvlc.slavetrigger_index")] =
+                        trigger.subtype - mvlc::stacks::TriggerSubtype::Slave0;
+                }
+                else if (trigger.subtype <= mvlc::stacks::Timer3)
+                {
+                    eventConfig->triggerCondition = TriggerCondition::MvlcStackTimer;
+
+                    // The stack timer period is stored in CrateConfig::initRegisters.
+                    // Calculate the timer index and the corresponding timer register address. Look for the register in
+                    // CrateConfig::initRegisters and store its value as the timer period in the EventConfig.
+                    auto timerIndex = trigger.subtype - mvlc::stacks::TriggerSubtype::Timer0;
+                    auto timerRegister = mvlc::stacks::get_stacktimer_register(timerIndex);
+
+                    auto regWrite = std::find_if(std::begin(crateConfig.initRegisters), std::end(crateConfig.initRegisters),
+                        [timerRegister] (const auto &regWrite) { return regWrite.first == timerRegister; });
+
+                    if (regWrite != std::end(crateConfig.initRegisters))
+                    {
+                        eventConfig->triggerOptions["mvlc.stacktimer_period"] = regWrite->second;
+                    }
+                }
             }
-            else if (triggerInfo.first == mvlc::stacks::TriggerType::External)
+            else if (trigger.type == mvlc::stacks::TriggerType::External)
             {
                 eventConfig->triggerCondition = TriggerCondition::TriggerIO;
             }
 
             // Walk the readoutStack to fill the EventConfig and create child
             // ModuleConfigs.
-            //
             //
             // The first group that does not contain any
             // read commands is used as the events "readout_start" script. The

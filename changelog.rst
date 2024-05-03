@@ -4,8 +4,39 @@
 Changelog
 ##################################################
 
-Version 1.11.0
---------------
+Version 1.12.2 - works with MVLC FW0037 or earlier
+--------------------------------------------------
+
+* mvlc:
+
+  - Update FTDI driver for windows from 1.3.0.2 to 1.3.0.8.
+
+  - Fix broken trigger setup with MVLC < FW0037.
+
+  - Fixes and improvements to the mesytec-mvlc YAML export/import.
+
+* vme_script
+
+  - Fix wrong FIFO mode setting when parsing block transfer commands.
+
+  - Do not accept invalid VME amods for block transfers (e.g. MBLT with a24).
+
+* vme_templates: Add template for MHV-4 readout via RC-Bus connection from a
+  parent VME module.
+
+* analysis
+
+  - Improve the Calibration editor.
+
+  - Fix potential corruption in the Difference operator when input sizes are not
+    equal (old analysis files).
+
+* vme ui: Bugfixes in the Add/Edit Module GUI.
+
+* Fix hang on shutdown under windows (promteheus-cpp related issue).
+
+Version 1.11.0 - MVLC FW0037 or later only!
+-------------------------------------------
 
 * Support for new MVLC firmware FW0037 features:
 

@@ -325,17 +325,24 @@ EventConfigDialog::EventConfigDialog(
                     auto timerLayout = new QFormLayout(timerWidget);
                     timerLayout->addRow(QSL("Timer Base"), m_d->combo_mvlcTimerBase);
                     timerLayout->addRow(QSL("Period"), m_d->spin_timerPeriod);
+                    auto label = new QLabel(QSL(
+                        "Periodic event realized using the MVLC Trigger I/O. A <b>StackStart</b> unit is connected to a"
+                        " <b>Timer</b> unit to periodically execute the event stack. The Trigger I/O configuration is"
+                        " automatically modified when starting the DAQ. Prefer creating periodic events using"
+                        " <b>StackTimers</b> to save on Trigger I/O resources."
+                                                ));
+                    label->setWordWrap(true);
+                    timerLayout->addRow(label);
                     m_d->stack_options->addWidget(timerWidget);
                 }
 
                 // Trigger IO Condition
                 {
                     auto label = new QLabel(QSL(
-                            "The event should be triggered via the MVLC Trigger I/O module.\n\n"
-                            "Use the Trigger I/O Editor to setup one of the "
-                            "StackStart units to trigger execution of this "
-                            "events readout stack. Then connect the StackStart unit to the "
-                            "desired activation signals."
+                            "The event should be triggered via the MVLC Trigger I/O module.<br/><br/>"
+                            "Use the Trigger I/O Editor to setup one of the <b>StackStart</b> "
+                            "units to trigger execution of this events readout stack. Then connect "
+                            "the StackStart unit to the desired activation signals."
                             ));
                     label->setWordWrap(true);
                     m_d->stack_options->addWidget(label);
@@ -349,7 +356,9 @@ EventConfigDialog::EventConfigDialog(
                     auto optionsWidget = new QWidget;
                     auto layout = new QFormLayout(optionsWidget);
                     layout->addRow(QSL("Master Trigger Index"), m_d->spin_mvlcSlaveTriggerIndex);
-                    auto label = new QLabel(QSL("MVLC On Master Trigger requires MVLC firmware <b>FW0037</b> or later!"));
+                    auto label = new QLabel(QSL(
+                        "MVLC On Master Trigger requires MVLC firmware <b>FW0037</b> or later!<br/>"
+                        " Works on the master itself and on connected secondary crates."));
                     label->setWordWrap(true);
                     layout->addRow(label);
                     m_d->stack_options->addWidget(optionsWidget);
@@ -644,7 +653,10 @@ ModuleConfigDialog::ModuleConfigDialog(
         nameEdit->setText(name);
 
         if (m_d->isNewModule_)
+        {
             addressEdit->setText(QString("0x%1").arg(mm.vmeAddress, 8, 16, QChar('0')));
+            m_d->variableEditor->setVariables(mvme::vme_config::variable_symboltable_from_module_meta(mm));
+        }
     };
 
     connect(typeCombo, static_cast<void (QComboBox::*) (int)>(&QComboBox::currentIndexChanged),
@@ -683,37 +695,27 @@ void ModuleConfigDialog::accept()
         const auto &mm(*it);
         m_module->setModuleMeta(mm);
 
-        if (m_d->isNewModule_ && !mm.moduleJson.empty())
+        if (m_d->isNewModule_)
         {
-            // New style template from a single json file.
-            mvme::vme_config::load_moduleconfig_from_modulejson(*m_module, mm.moduleJson);
-        }
-        else if (m_d->isNewModule_)
-        {
-            // Old style template from multiple .vme files
-            m_module->getReadoutScript()->setObjectName(mm.templates.readout.name);
-            m_module->getReadoutScript()->setScriptContents(mm.templates.readout.contents);
-
-            m_module->getResetScript()->setObjectName(mm.templates.reset.name);
-            m_module->getResetScript()->setScriptContents(mm.templates.reset.contents);
-
-            for (const auto &vmeTemplate: mm.templates.init)
+            if (!mm.moduleJson.empty())
             {
-                m_module->addInitScript(new VMEScriptConfig(
-                    vmeTemplate.name, vmeTemplate.contents));
+                // New style template from a single json file.
+                mvme::vme_config::load_moduleconfig_from_modulejson(*m_module, mm.moduleJson);
             }
-
-            // FIXME: This should be done earlier so that default module
-            // variables are visible when selecting the module type.
-            for (int i=0; i<mm.variables.size(); ++i)
+            else
             {
-                auto json = mm.variables.at(i).toObject();
-                vme_script::Variable var(
-                    json["value"].toString(),
-                    {},
-                    json["comment"].toString());
+                // Old style template from multiple .vme files
+                m_module->getReadoutScript()->setObjectName(mm.templates.readout.name);
+                m_module->getReadoutScript()->setScriptContents(mm.templates.readout.contents);
 
-                m_module->setVariable(json["name"].toString(), var);
+                m_module->getResetScript()->setObjectName(mm.templates.reset.name);
+                m_module->getResetScript()->setScriptContents(mm.templates.reset.contents);
+
+                for (const auto &vmeTemplate: mm.templates.init)
+                {
+                    m_module->addInitScript(new VMEScriptConfig(
+                        vmeTemplate.name, vmeTemplate.contents));
+                }
             }
         }
     }

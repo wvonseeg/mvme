@@ -1133,8 +1133,14 @@ bool MVMEMainWindow::onActionExportToMVLC_triggered()
         path += "/" + basename;
     }
 
-    QString fileName = QFileDialog::getSaveFileName(
-        this, m_d->actionExportToMVLC->text(), path, yamlOrAnyFileFilter);
+    QFileDialog fd(this, m_d->actionExportToMVLC->text(), path, yamlOrAnyFileFilter);
+    fd.setDefaultSuffix(".yaml");
+    fd.setAcceptMode(QFileDialog::AcceptMode::AcceptSave);
+
+    if (fd.exec() != QDialog::Accepted || fd.selectedFiles().isEmpty())
+        return false;
+
+    auto fileName = fd.selectedFiles().front();
 
     if (fileName.isEmpty())
         return false;
@@ -1175,7 +1181,7 @@ void MVMEMainWindow::onActionImportFromMVLC_triggered()
     if (!gui_vmeconfig_maybe_save_if_modified(m_d->m_context->getAnalysisServiceProvider()).first)
         return;
 
-    QString path = QStandardPaths::standardLocations(QStandardPaths::DocumentsLocation).at(0);
+    auto path = QSettings().value("LastWorkspaceDirectory").toString();
 
     QString fileName = QFileDialog::getOpenFileName(
         this, m_d->actionImportFromMVLC->text(), path, yamlOrAnyFileFilter);
@@ -1207,16 +1213,24 @@ void MVMEMainWindow::onActionImportFromMVLC_triggered()
         return;
     }
 
-    auto vmeConfig = vmeconfig_from_crateconfig(crateConfig);
+    try
+    {
+        auto vmeConfig = vmeconfig_from_crateconfig(crateConfig);
 
-    // Strip the extension from the input filename, add "-imported.vme" and use
-    // that as the suggested vme config name.
-    QFileInfo fi(fileName);
-    auto configName = fi.baseName() + QSL("-imported.vme");
+        // Strip the extension from the input filename, add "-imported.vme" and use
+        // that as the suggested vme config name.
+        QFileInfo fi(fileName);
+        auto configName = fi.baseName() + QSL("-imported.vme");
 
-    m_d->m_context->setVMEConfig(vmeConfig.release());
-    m_d->m_context->setVMEConfigFilename(configName, false);
-    m_d->m_context->setMode(GlobalMode::DAQ);
+        m_d->m_context->setVMEConfig(vmeConfig.release());
+        m_d->m_context->setVMEConfigFilename(configName, false);
+        m_d->m_context->setMode(GlobalMode::DAQ);
+    }
+    catch (const vme_script::ParseError &e)
+    {
+        QMessageBox::critical(
+            0, "Error", QSL("Error converting MVLC crate config to MVME VME config: %1").arg(e.toString()));
+    }
 }
 
 void MVMEMainWindow::onActionOpenListfile_triggered()

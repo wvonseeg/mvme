@@ -4353,25 +4353,39 @@ void EventWidgetPrivate::generateDefaultFilters(ModuleConfig *module)
 
 PipeDisplay *EventWidgetPrivate::makeAndShowPipeDisplay(Pipe *pipe)
 {
-    bool showDecimals = true;
+    assert(pipe);
+    assert(pipe->getSource());
 
-    // If the pipes input is a data source, meaning it is on level 0 and the
-    // data is the result of data filter extraction, then do not show decimals
-    // values but truncate to the raw integer value.
-    // This basically truncates down to the extracted value without any added
-    // random integer.
-    //if (pipe && qobject_cast<SourceInterface *>(pipe->getSource()))
-    //    showDecimals = false;
+    if (!pipe || !pipe->getSource())
+        return nullptr;
 
-    auto widget = new PipeDisplay(m_serviceProvider->getAnalysis(), pipe, showDecimals, m_q);
+    auto pipeDisplayName = QSL("PipeDisplay/%1_%2")
+        .arg(pipe->source->getId().toString())
+        .arg(QString::number(pipe->sourceOutputIndex));
 
-    QObject::connect(m_displayRefreshTimer, &QTimer::timeout, widget, &PipeDisplay::refresh);
-    QObject::connect(pipe->source, &QObject::destroyed, widget, &QWidget::close);
-    add_widget_close_action(widget);
-    widget->move(QCursor::pos());
-    widget->setAttribute(Qt::WA_DeleteOnClose);
-    widget->show();
-    return widget;
+    if (!(QGuiApplication::keyboardModifiers() & Qt::ControlModifier))
+    {
+        if (auto pipeDisplay = qobject_cast<PipeDisplay *>(find_top_level_widget(pipeDisplayName)))
+        {
+            show_and_activate(pipeDisplay);
+            return pipeDisplay;
+        }
+    }
+
+    auto pipeDisplay = new PipeDisplay(m_serviceProvider->getAnalysis(), pipe);
+    pipeDisplay->setObjectName(pipeDisplayName);
+
+    QObject::connect(m_displayRefreshTimer, &QTimer::timeout, pipeDisplay, &PipeDisplay::refresh);
+    QObject::connect(pipe->getSource(), &QObject::destroyed, pipeDisplay, &QWidget::close);
+    add_widget_close_action(pipeDisplay);
+    pipeDisplay->move(QCursor::pos());
+    pipeDisplay->setAttribute(Qt::WA_DeleteOnClose);
+    pipeDisplay->show();
+
+    auto geoSaver = new WidgetGeometrySaver(pipeDisplay);
+    geoSaver->addAndRestore(pipeDisplay, pipeDisplayName);
+
+    return pipeDisplay;
 }
 
 void EventWidgetPrivate::doPeriodicUpdate()
